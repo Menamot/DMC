@@ -1,20 +1,30 @@
-
-
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+
 from tqdm import tqdm
 from sklearn.cluster import KMeans
-from sklearn.model_selection import KFold
 from sklearn.base import BaseEstimator, ClassifierMixin
+from itertools import combinations
+
 
 class DMC(BaseEstimator, ClassifierMixin):
-    def __int__(
+    def __init__(
             self,
-            discretization='kmeans'
+            T=10,
+            discretization='kmeans',
+
     ):
+        self.L = None
+        self.piStar = None
+        self.piTrain = None
+        self.pHat = None
+        self.profile_labels = None
+        self.discretization_model = None
+        self.T = T
         self.discretization = discretization
 
-    def fit(self, X, y, L=None):
+    def fit(self, X, y, L=None, N=1000, option_plot=0, Box='none'):
         if isinstance(X, pd.DataFrame):
             X = X.to_numpy()
         if isinstance(y, pd.DataFrame):
@@ -22,30 +32,46 @@ class DMC(BaseEstimator, ClassifierMixin):
 
         K = len(np.unique(y))
         if L is None:
-            L = np.ones((K,K)) - np.eye(K)
+            self.L = np.ones((K, K)) - np.eye(K)
+        else:
+            self.L = L
 
         if self.discretization == 'kmeans':
-            # self.T_optimal =
-            self.discretization_model = KMeans(n_clusters=self.T_optimal)
+            self.discretization_model = KMeans(n_clusters=self.T)
             self.discretization_model.fit(X)
             self.profile_labels = self.discretization_model.labels_
 
         if self.discretization == "DT":
             pass
 
-        self.pHat = compute_pHat(self.profile_labels, y, K, self.T_optimal)
-        # self.piStar = compute_piStar()
+        self.pHat = compute_pHat(self.profile_labels, y, K, self.T)
+        self.piTrain = compute_pi(y, K)
+        self.piStar = compute_piStar(self.pHat, y, K, self.L, self.T, N, option_plot, Box)[0]
 
-    def predict(self, X):
-        pass
+    def predict(self, X, pi=None):
+        if pi is None:
+            pi = self.piTrain
+        return predict_profile_label(pi, self.pHat, self.L)[self.discretization_model.predict(X)]
 
-    def predict_prob(self, X):
-        pass
+    def predict_prob(self, X, pi=None):
+        if pi is None:
+            pi = self.piTrain
+        lambd = (pi.reshape(-1, 1) * self.L).T @ self.pHat
+        prob = lambd / np.sum(lambd, axis=0)
+        return prob[:, self.discretization_model.predict(X)]
+
+    # Function set_params and get_params are used to gridsearchCV in sklearn
+    def set_params(self, **params):
+        for parameter, value in params.items():
+            setattr(self, parameter, value)
+        return self
+
+    def get_params(self, deep=True):
+        return {"T": self.T}
 
 
-def compute_pi(y:np.ndarray, K:int):
+def compute_pi(y: np.ndarray, K: int):
     """
-
     Parameters
     ----------
     y : ndarray of shape (n_samples,)
@@ -66,12 +92,12 @@ def compute_pi(y:np.ndarray, K:int):
         pi[k] = np.sum(y == k) / total_count
     return pi
 
-def compute_pHat(profile_labels:np.ndarray, y:np.ndarray, K:int, T:int):
-    """
 
+def compute_pHat(XD: np.ndarray, y: np.ndarray, K: int, T: int):
+    """
     Parameters
     ----------
-    profile_labels : ndarray of shape (n_samples,)
+    XD : ndarray of shape (n_samples,)
         Labels of profiles for each data point
 
     y : ndarray of shape (n_samples,)
@@ -93,14 +119,12 @@ def compute_pHat(profile_labels:np.ndarray, y:np.ndarray, K:int, T:int):
         Ik = np.where(y == k)[0]
         mk = len(Ik)
         for t in range(T):
-            pHat[k, t] = np.sum(profile_labels[Ik] == t) / mk
+            pHat[k, t] = np.sum(XD[Ik] == t) / mk
     return pHat
 
 
-
-def compute_conditional_risk(y_true:np.ndarray, y_pred:np.ndarray, K:int, L:np.ndarray):
+def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, K: int, L: np.ndarray):
     """
-
     Parameters
     ----------
     y_true : ndarray of shape (n_samples,)
@@ -136,5 +160,366 @@ def compute_conditional_risk(y_true:np.ndarray, y_pred:np.ndarray, K:int, L:np.n
     R = np.dot(L, confmat.T).diagonal().ravel()
 
     return R, confmat
+
+
+def compute_global_risk(R, pi):
+    """
+    Parameters
+    ----------
+    R : ndarray of shape (K,)
+        Conditional risk
+    pi : ndarray of shape (K,)
+        Proportion of classes
+
+    Returns
+    -------
+    r : float
+        Global risk.
+    """
+
+    r = np.sum(R * pi)
+
+    return r
+
+
+def predict_profile_label(pi, pHat, L):
+    lambd = (pi.reshape(-1, 1) * L).T @ pHat
+    lbar = np.argmin(lambd, axis=0)
+    return lbar
+
+
+def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
+    """
+    Parameters
+    ----------
+    pHat : Array of floats
+        Probability estimate of observing the features profile in each class.
+    y_train : Dataframe
+        Real labels of the training set.
+    K : int
+        Number of classes.
+    L : Array
+        Loss Function.
+    T : int
+        Number of discrete profiles.
+    N : int
+        Number of iterations in the projected subgradient algorithm.
+    optionPlot : int {0,1}
+        1 plots figure,   0: does not plot figure.
+    Box : Array
+        {'none', matrix} : Box-constraints on the priors.
+
+    Returns
+    -------
+    piStar : Array of floats
+        Least favorable priors.
+    rStar : float
+        Global risks.
+    RStar : Array of float
+        Conditional risks.
+    V_iter : Array
+        Values of the V function at each iteration.
+    stockpi : Array
+        Values of pi at each iteration.
+
+    """
+
+    def proj_simplex_Condat(K, pi):
+        """
+        Parameters
+        ----------
+        K : int
+            Number of classes.
+        pi : Array of floats
+            Vector to project onto the simplex.
+
+        Returns
+        -------
+        piProj : List of floats
+            Priors projected onto the simplex.
+
+        """
+
+        linK = np.linspace(1, K, K)
+        piProj = np.maximum(pi - np.max(((np.cumsum(np.sort(pi)[::-1]) - 1) / (linK[:]))), 0)
+        piProj = piProj / np.sum(piProj)
+        return piProj
+
+    def graph_convergence(V_iter):
+        '''
+        Parameters
+        ----------
+        V_iter : List
+            List of value of V at each iteration n.
+
+        Returns
+        -------
+        Plot
+            Plot of V_pibar.
+
+        '''
+
+        figConv = plt.figure(figsize=(8, 4))
+        plt_conv = figConv.add_subplot(1, 1, 1)
+        V = V_iter.copy()
+        V.insert(0, np.min(V))
+        font = {'weight': 'normal', 'size': 16}
+        plt_conv.plot(V, label='V(pi(n))')
+        plt_conv.set_xscale('log')
+        plt_conv.set_ylim(np.min(V), np.max(V) + 0.01)
+        plt_conv.set_xlim(10 ** 0)
+        plt_conv.set_xlabel('Interation n', fontdict=font)
+        plt_conv.set_title('Maximization of V over U', fontdict=font)
+        plt_conv.grid(True)
+        plt_conv.grid(which='minor', axis='x', ls='-.')
+        plt_conv.legend(loc=2, shadow=True)
+
+    def proj_onto_U(pi, Box, K):
+        """
+        Parameters
+        ----------
+        pi : Array of floats
+            Vector to project onto the box-constrained simplex..
+        Box : Matrix
+            {'none', matrix} : Box-constraint on the priors.
+        K : int
+            Number of classes.
+
+        Returns
+        -------
+        pi_new : Array of floats
+                Priors projected onto the box-constrained simplex.
+
+        """
+
+        def proj_onto_polyhedral_set(pi, Box, K):
+            """
+            Parameters
+            ----------
+            pi : Array of floats
+                Vector to project onto the box-constrained simplex.
+            Box : Array
+                {'none', matrix} : Box-constraint on the priors.
+            K : int
+                Number of classes.
+
+            Returns
+            -------
+            piStar : Array of floats
+                    Priors projected onto the box-constrained simplex.
+
+            """
+
+            def num2cell(a):
+                if type(a) is np.ndarray:
+                    return [num2cell(x) for x in a]
+                else:
+                    return a
+
+            # Verification of constraints
+            for i in range(K):
+                for j in range(2):
+                    if Box[i, j] < 0:
+                        Box[i, j] = 0
+                    if Box[i, j] > 1:
+                        Box[i, j] = 1
+
+            # Generate matrix G:
+            U = np.concatenate((np.eye(K), -np.eye(K), np.ones((1, K)), -np.ones((1, K))))
+            eta = Box[:, 1].tolist() + (-Box[:, 0]).tolist() + [1] + [-1]
+
+            n = U.shape[0]
+
+            G = np.zeros((n, n))
+            for i in range(n):
+                for j in range(n):
+                    G[i, j] = np.vdot(U[i, :], U[j, :])
+
+            # Generate subsets of {1,...,n}:
+            M = (2 ** n) - 1
+            I = num2cell(np.zeros((1, M)))
+
+            i = 0
+            for l in range(n):
+                T = list(combinations(list(range(n)), l + 1))
+                for p in range(i, i + len(T)):
+                    I[0][p] = T[p - i]
+                i = i + len(T)
+
+            # Algorithm
+
+            for m in range(M):
+                Im = I[0][m]
+
+                Gmm = np.zeros((len(Im), len(Im)))
+                ligne = 0
+                for i in Im:
+                    colonne = 0
+                    for j in Im:
+                        Gmm[ligne, colonne] = G[i, j]
+                        colonne += 1
+                    ligne += 1
+
+                if np.linalg.det(Gmm) != 0:
+
+                    nu = np.zeros((2 * K + 2, 1))
+                    w = np.zeros((len(Im), 1))
+                    for i in range(len(Im)):
+                        w[i] = np.vdot(pi, U[Im[i], :]) - eta[Im[i]]
+
+                    S = np.linalg.solve(Gmm, w)
+
+                    for e in range(len(S)):
+                        nu[Im[e]] = S[e]
+
+                    if np.any(nu < -10 ** (-10)) == False:
+                        A = G.dot(nu)
+                        z = np.zeros((1, 2 * K + 2))
+                        for j in range(2 * K + 2):
+                            z[0][j] = np.vdot(pi, U[j, :]) - eta[j] - A[j]
+
+                        if np.all(z <= 10 ** (-10)) == True:
+                            pi_new = pi
+                            for i in range(2 * K + 2):
+                                pi_new = pi_new - nu[i] * U[i, :]
+
+            piStar = pi_new
+
+            # Remove noisy small calculus errors:
+            piStar = piStar / piStar.sum()
+
+            return piStar
+        check_U = 0
+        if pi.sum() == 1:
+            for k in range(K):
+                if (pi[0][k] >= Box[k, 0]) & (pi[0][k] <= Box[k, 1]):
+                    check_U = check_U + 1
+
+        if check_U == K:
+            pi_new = pi
+
+        if check_U < K:
+            pi_new = proj_onto_polyhedral_set(pi, Box, K)
+
+        return pi_new
+
+    # IF BOX-CONSTRAINT == NONE (PROJECTION ONTO THE SIMPLEX)
+    if isinstance(Box, str) == True:
+        pi = compute_pi(y_train, K).reshape(1, -1)
+        rStar = 0
+        piStar = pi
+        RStar = 0
+
+        V_iter = []
+        stockpi = np.zeros((K, N))
+
+        for n in range(1, N + 1):
+            # Compute subgradient R at point pi (see equation (21) in the paper)
+            lambd = np.dot(L, pi.T * pHat)
+            R = np.zeros((1, K))
+            for k in range(0, K):
+                mu_k = 0
+                for t in range(0, T):
+                    lbar = np.argmin(lambd[:, t])
+                    mu_k = mu_k + L[k, lbar] * pHat[k, t]
+                R[0, k] = mu_k
+                stockpi[k, n - 1] = pi[0, k]
+            r = compute_global_risk(R, pi)
+            V_iter.append(r)
+            if r > rStar:
+                rStar = r
+                piStar = pi
+                RStar = R
+                # Update pi for iteration n+1
+            gamma = 1 / n
+            eta = np.maximum(float(1), np.linalg.norm(R))
+            w = pi + (gamma / eta) * R
+            pi = proj_simplex_Condat(K, w)
+
+        # Check if pi_N == piStar
+        lambd = np.dot(L, pi.T * pHat)
+        R = np.zeros((1, K))
+        for k in range(0, K):
+            mu_k = 0
+            for t in range(0, T):
+                lbar = np.argmin(lambd[:, t])
+                mu_k = mu_k + L[k, lbar] * pHat[k, t]
+            R[0, k] = mu_k
+            stockpi[k, n - 1] = pi[0, k]
+        r = compute_global_risk(R, pi)
+        if r > rStar:
+            rStar = r
+            piStar = pi
+            RStar = R
+
+        if optionPlot == 1:
+            graph_convergence(V_iter)
+
+    # IF BOX-CONSTRAINT
+    if isinstance(Box, str) == False:
+        pi = compute_pi(y_train, K).reshape(1, -1)
+        rStar = 0
+        piStar = pi
+        RStar = 0
+
+        V_iter = []
+        stockpi = np.zeros((K, N))
+
+        for n in range(1, N + 1):
+            # Compute subgradient R at point pi (see equation (21) in the paper)
+            lambd = np.dot(L, pi.T * pHat)
+            R = np.zeros((1, K))
+            for k in range(0, K):
+                mu_k = 0
+                for t in range(0, T):
+                    lbar = np.argmin(lambd[:, t])
+                    mu_k = mu_k + L[k, lbar] * pHat[k, t]
+                R[0, k] = mu_k
+                stockpi[k, n - 1] = pi[0, k]
+            r = compute_global_risk(R, pi)
+            V_iter.append(r)
+            if r > rStar:
+                rStar = r
+                piStar = pi
+                RStar = R
+                # Update pi for iteration n+1
+            gamma = 1 / n
+            eta = np.maximum(float(1), np.linalg.norm(R))
+            w = pi + (gamma / eta) * R
+            pi = proj_onto_U(w, Box, K)
+
+        # Check if pi_N == piStar
+        lambd = np.dot(L, pi.T * pHat)
+        R = np.zeros((1, K))
+        for k in range(0, K):
+            mu_k = 0
+            for t in range(0, T):
+                lbar = np.argmin(lambd[:, t])
+                mu_k = mu_k + L[k, lbar] * pHat[k, t]
+            R[0, k] = mu_k
+            stockpi[k, n - 1] = pi[0, k]
+        r = compute_global_risk(R, pi)
+        if r > rStar:
+            rStar = r
+            piStar = pi
+            RStar = R
+
+        if optionPlot == 1:
+            graph_convergence(V_iter)
+
+    return piStar, rStar, RStar, V_iter, stockpi
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
