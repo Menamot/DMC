@@ -42,6 +42,8 @@ class DMC(BaseEstimator, ClassifierMixin):
             self.profile_labels = self.discretization_model.labels_
 
         if self.discretization == "DT":
+            #Test
+            
             pass
 
         self.pHat = compute_pHat(self.profile_labels, y, K, self.T)
