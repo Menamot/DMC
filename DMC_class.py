@@ -1,43 +1,52 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
 from tqdm import tqdm
 from sklearn.cluster import KMeans
 from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
+from sklearn.utils import check_random_state
+from sklearn.utils._param_validation import Interval, StrOptions
+import numbers
 from itertools import combinations
 
 
 class DMC(BaseEstimator, ClassifierMixin):
+    _parameter_constraints: dict = {
+
+        "N": [Interval(numbers.Integral, 1, None, closed="left")],
+
+        }
     def __init__(
             self,
-            T=10,
-            discretization='kmeans',
+            T=10, #Number of discrete profiles
+            N=10,
+            discretization='kmeans', 
+            L=None,
+            random_state=None,
 
     ):
-        self.L = None
-        self.piStar = None
-        self.piTrain = None
-        self.pHat = None
-        self.profile_labels = None
-        self.discretization_model = None
         self.T = T
+        self.N = N
         self.discretization = discretization
+        self.L =L
+        self.random_state=random_state
+        self._validate_params()
 
-    def fit(self, X, y, L=None, N=1000, option_plot=0, Box='none'):
-        if isinstance(X, pd.DataFrame):
+    def fit(self, X, y, option_plot=0):
+        if isinstance(X, pd.DataFrame): #Convert X to a numpy array if is a Dataframe
             X = X.to_numpy()
-        if isinstance(y, pd.DataFrame):
+        if isinstance(y, pd.DataFrame):#Convert y to a numpy array if is a Dataframe
             y = y.to_numpy().ravel()  # Use ravel() to make sure that y is one-dimensional
+        X,y=check_X_y(X,y) #Checks X and y for consistent length
+        self.K = len(np.unique(y)) #Safe K as a global variable
+        if self.L is None: #Use 0/1 loss for default
+            self.L = np.ones((self.K, self.K)) - np.eye(self.K) 
+        self.random_state=check_random_state(self.random_state)
 
-        K = len(np.unique(y))
-        if L is None:
-            self.L = np.ones((K, K)) - np.eye(K)
-        else:
-            self.L = L
-
-        if self.discretization == 'kmeans':
-            self.discretization_model = KMeans(n_clusters=self.T)
+        if self.discretization == 'kmeans': #Discrete profiles using kmeans 
+            self.discretization_model = KMeans(n_clusters=self.T,
+                                               random_state=self.random_state)
             self.discretization_model.fit(X)
             self.profile_labels = self.discretization_model.labels_
 
@@ -46,16 +55,21 @@ class DMC(BaseEstimator, ClassifierMixin):
             
             pass
 
-        self.pHat = compute_pHat(self.profile_labels, y, K, self.T)
-        self.piTrain = compute_pi(y, K)
-        self.piStar = compute_piStar(self.pHat, y, K, self.L, self.T, N, option_plot, Box)[0]
+        self.pHat = compute_pHat(self.profile_labels, y, self.K, self.T)
+        self.piTrain = compute_pi(y, self.K)
+        self.piStar = compute_piStar(self.pHat, y, self.K, self.L, self.T,
+                                      self.N, option_plot, self.box)[0]
+        self._is_fitted = True
+        return self
 
     def predict(self, X, pi=None):
+        check_is_fitted(self)
         if pi is None:
             pi = self.piTrain
         return predict_profile_label(pi, self.pHat, self.L)[self.discretization_model.predict(X)]
 
     def predict_prob(self, X, pi=None):
+        check_is_fitted(self)
         if pi is None:
             pi = self.piTrain
         lambd = (pi.reshape(-1, 1) * self.L).T @ self.pHat
@@ -69,7 +83,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         return self
 
     def get_params(self, deep=True):
-        return {"T": self.T}
+        return {"T": self.T, "N": self.N}
 
 
 def compute_pi(y: np.ndarray, K: int):
