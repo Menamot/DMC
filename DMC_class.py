@@ -1,14 +1,16 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from tqdm import tqdm
+
 from sklearn.cluster import KMeans
+from sklearn.preprocessing import LabelEncoder
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.utils import check_random_state
 from sklearn.utils._param_validation import Interval, StrOptions
 import numbers
 from itertools import combinations
+from sklearn.model_selection import GridSearchCV
 
 
 class DMC(BaseEstimator, ClassifierMixin):
@@ -29,52 +31,82 @@ class DMC(BaseEstimator, ClassifierMixin):
         self.T = T
         self.N = N
         self.discretization = discretization
+        self.option_info = option_info
+
+        self.label_encoder = LabelEncoder()
         self.L =L
         self.random_state=random_state
         self._validate_params()
 
-    def fit(self, X, y, option_plot=0):
-        if isinstance(X, pd.DataFrame): #Convert X to a numpy array if is a Dataframe
+    def fit(self, X, y, L=None, N=1000, option_plot=0, Box='none', **paramT):
+        if isinstance(X, pd.DataFrame):
             X = X.to_numpy()
         if isinstance(y, pd.DataFrame):#Convert y to a numpy array if is a Dataframe
             y = y.to_numpy().ravel()  # Use ravel() to make sure that y is one-dimensional
-        X,y=check_X_y(X,y) #Checks X and y for consistent length
-        self.K = len(np.unique(y)) #Safe K as a global variable
-        if self.L is None: #Use 0/1 loss for default
-            self.L = np.ones((self.K, self.K)) - np.eye(self.K) 
-        self.random_state=check_random_state(self.random_state)
 
-        if self.discretization == 'kmeans': #Discrete profiles using kmeans 
-            self.discretization_model = KMeans(n_clusters=self.T,
-                                               random_state=self.random_state)
+        y_encoded = self.label_encoder.fit_transform(y)
+
+        K = len(np.unique(y_encoded))
+        if L is None:
+            self.L = np.ones((K, K)) - np.eye(K)
+        else:
+            self.L = L
+
+        if self.discretization == 'kmeans':
+            if self.T == 'auto':
+                if self.option_info is True:
+                    print('Calculate T_optimal... ', end='')
+                self.T = self.get_T_optimal(X, y_encoded, **paramT)['T']
+                if self.option_info is True:
+                    print('Finish')
+            self.discretization_model = KMeans(n_clusters=self.T)
             self.discretization_model.fit(X)
-            self.profile_labels = self.discretization_model.labels_
+            self.discrete_profiles = self.discretization_model.labels_
 
         if self.discretization == "DT":
             #Test
             
             pass
 
-        self.pHat = compute_pHat(self.profile_labels, y, self.K, self.T)
-        self.piTrain = compute_pi(y, self.K)
-        self.piStar = compute_piStar(self.pHat, y, self.K, self.L, self.T,
-                                      self.N, option_plot, self.box)[0]
-        self._is_fitted = True
-        return self
+        if self.option_info is True:
+            print('Calculate pHat... ', end='')
+        self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
+        if self.option_info is True:
+            print('Finish')
+
+        self.piTrain = compute_pi(y_encoded, K)
+        if self.option_info is True:
+            print('Calculate piStar... ', end='')
+        self.piStar = compute_piStar(self.pHat, y_encoded, K, self.L, self.T, N, option_plot, Box)[0]
+        if self.option_info is True:
+            print('Finish')
+
+        if self.option_info is True:
+            print('Model fit compiled')
 
     def predict(self, X, pi=None):
         check_is_fitted(self)
         if pi is None:
-            pi = self.piTrain
-        return predict_profile_label(pi, self.pHat, self.L)[self.discretization_model.predict(X)]
+            pi = self.piStar
+        return self.label_encoder.inverse_transform(
+            predict_profile_label(pi, self.pHat, self.L)[self.discretization_model.predict(X)]
+        )
 
     def predict_prob(self, X, pi=None):
         check_is_fitted(self)
         if pi is None:
-            pi = self.piTrain
+            pi = self.piStar
         lambd = (pi.reshape(-1, 1) * self.L).T @ self.pHat
         prob = lambd / np.sum(lambd, axis=0)
-        return prob[:, self.discretization_model.predict(X)]
+        return prob[:, self.discretization_model.predict(X)].T
+
+    def get_T_optimal(self, X, y, T_start=10, T_end=100, T_step=10):
+        param_grid = {
+            'T': np.linspace(T_start, T_end, T_step, dtype=int)
+        }
+        grid_search = GridSearchCV(estimator=self, param_grid=param_grid, cv=2)
+        grid_search.fit(X, y)
+        return grid_search.best_params_
 
     # Function set_params and get_params are used to gridsearchCV in sklearn
     def set_params(self, **params):
@@ -153,27 +185,38 @@ def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, K: int, L: 
         Number of classes
 
     L : ndarray of shape (K, K)
-        Loss matrix
+        Loss matrix, where K is the number of unique classes
 
     Returns
     -------
     R : ndarray of shape (K,)
         Conditional risk
 
-    confmat : ndarray of shape (K,K)
+    confmat : ndarray of shape (K, K)
         Confusion matrix
     """
+    # Identify all unique classes
+    unique_classes = np.unique(np.concatenate((y_true, y_pred)))
+    class_to_index = {cls: idx for idx, cls in enumerate(unique_classes)}
+
+    # Initialize the confusion matrix
     confmat = np.zeros((K, K))
 
-    for k in range(K):
-        Ik = np.where(y_true == k)[0]
-        mk = len(Ik)
-        if mk > 0:
-            # Calculate the proportion of each predicted category in Ik
-            for l in range(K):
-                confmat[k, l] = np.sum(y_pred[Ik] == l) / mk
+    # Populate the confusion matrix
+    for true_class in unique_classes:
+        true_class_index = class_to_index[true_class]
+        Ik = np.where(y_true == true_class)[0]
+        pred_classes_indices = [class_to_index[pred] for pred in y_pred[Ik]]
+        for pred_index in pred_classes_indices:
+            confmat[true_class_index, pred_index] += 1
+
+    # Normalize the rows of the confusion matrix to get probabilities
+    row_sums = confmat.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1  # Prevent division by zero for classes not in y_true
+    confmat /= row_sums
+
     # Calculate the conditional risk for each true category
-    R = np.dot(L, confmat.T).diagonal().ravel()
+    R = np.dot(L, confmat.T).diagonal()
 
     return R, confmat
 
