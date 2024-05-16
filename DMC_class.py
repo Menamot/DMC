@@ -26,13 +26,13 @@ class DMC(BaseEstimator, ClassifierMixin):
         }
     def __init__(
             self,
-            T="auto", #Number of discrete profiles
+            T="auto", 
             N=1000,
             discretization='kmeans', 
             L=None,
             box=None,
             random_state=None,
-            option_info=True
+            option_info=False
     ):
         """
         Initialize the DMC model.
@@ -41,7 +41,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         N : int, default=1000
             Maximum number of iterations for the algorithm
         T : int or str, default='auto'
-            Number of clusters or bins for discretization. Must be an integer greater than or equal to 1. or 'auto' for automatic determination.
+            Number of  discrete profiles. Must be an integer greater than or equal to 1. or 'auto' for automatic determination.
         discretization : str, default='kmeans'
             Method of discretization to use. Must be 'kmeans' or 'DT'(decision tree).
         L : array-like or None, default=None
@@ -55,16 +55,14 @@ class DMC(BaseEstimator, ClassifierMixin):
         self.N = N
         self.discretization = discretization
         self.box=box
-        #self.option_info = option_info
         self.label_encoder = LabelEncoder()
         self.L =L
         self.random_state=random_state
         self.option_info=option_info
-        self._is_fitted = False
         self._validate_params()
 
     def fit(self, X, y, **paramT):
-        random_state = check_random_state(self.random_state)
+        self.random_state = check_random_state(self.random_state)
         if isinstance(X, pd.DataFrame):
             X = X.to_numpy()
         if isinstance(y, pd.DataFrame):#Convert y to a numpy array if is a Dataframe
@@ -91,9 +89,12 @@ class DMC(BaseEstimator, ClassifierMixin):
             self.discretization_model = DecisionTreeClassifier(ccp_alpha=0.0, 
                                            class_weight=None, 
                                            criterion='gini', 
-                                           max_depth= 10, 
+                                           max_depth= 4, 
+                                           min_samples_leaf=50 ,
+                                            max_features= 'sqrt',
                                            splitter='best',random_state=self.random_state).fit(X, y_encoded)
             self.discrete_profiles=discretisation_DT(X, self.discretization_model)
+            self.T=self.discretization_model.get_n_leaves()
             
             
 
