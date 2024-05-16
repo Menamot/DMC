@@ -11,34 +11,60 @@ from sklearn.utils._param_validation import Interval, StrOptions
 import numbers
 from itertools import combinations
 from sklearn.model_selection import GridSearchCV
-
+from sklearn.tree import DecisionTreeClassifier
 
 class DMC(BaseEstimator, ClassifierMixin):
     _parameter_constraints: dict = {
 
         "N": [Interval(numbers.Integral, 1, None, closed="left")],
+        "T":[Interval(numbers.Integral, 1, None, closed="left"),StrOptions({"auto"})],
+        "discretization":[StrOptions({"kmeans", "DT"})],
+        "L":["array-like",None],
+        "box":["array-like",None],
+        "random_state": ["random_state"],
 
         }
     def __init__(
             self,
-            T=10, #Number of discrete profiles
-            N=10,
+            T="auto", #Number of discrete profiles
+            N=1000,
             discretization='kmeans', 
             L=None,
+            box=None,
             random_state=None,
-
+            option_info=True
     ):
+        """
+        Initialize the DMC model.
+
+        Parameters:
+        N : int, default=1000
+            Maximum number of iterations for the algorithm
+        T : int or str, default='auto'
+            Number of clusters or bins for discretization. Must be an integer greater than or equal to 1. or 'auto' for automatic determination.
+        discretization : str, default='kmeans'
+            Method of discretization to use. Must be 'kmeans' or 'DT'(decision tree).
+        L : array-like or None, default=None
+            Loss function, default is zero-one loss.
+        box : array-like or None, default=None
+            Box constraints for the prios.
+        random_state : int, RandomState instance or None, default=None
+            Seed for random number generator for reproducibility.
+        """
         self.T = T
         self.N = N
         self.discretization = discretization
-        self.option_info = option_info
-
+        self.box=box
+        #self.option_info = option_info
         self.label_encoder = LabelEncoder()
         self.L =L
         self.random_state=random_state
+        self.option_info=option_info
+        self._is_fitted = False
         self._validate_params()
 
-    def fit(self, X, y, L=None, N=1000, option_plot=0, Box='none', **paramT):
+    def fit(self, X, y, **paramT):
+        random_state = check_random_state(self.random_state)
         if isinstance(X, pd.DataFrame):
             X = X.to_numpy()
         if isinstance(y, pd.DataFrame):#Convert y to a numpy array if is a Dataframe
@@ -47,10 +73,8 @@ class DMC(BaseEstimator, ClassifierMixin):
         y_encoded = self.label_encoder.fit_transform(y)
 
         K = len(np.unique(y_encoded))
-        if L is None:
+        if self.L is None:
             self.L = np.ones((K, K)) - np.eye(K)
-        else:
-            self.L = L
 
         if self.discretization == 'kmeans':
             if self.T == 'auto':
@@ -59,14 +83,19 @@ class DMC(BaseEstimator, ClassifierMixin):
                 self.T = self.get_T_optimal(X, y_encoded, **paramT)['T']
                 if self.option_info is True:
                     print('Finish')
-            self.discretization_model = KMeans(n_clusters=self.T)
+            self.discretization_model = KMeans(n_clusters=self.T,random_state=self.random_state)
             self.discretization_model.fit(X)
             self.discrete_profiles = self.discretization_model.labels_
 
         if self.discretization == "DT":
-            #Test
+            self.discretization_model = DecisionTreeClassifier(ccp_alpha=0.0, 
+                                           class_weight=None, 
+                                           criterion='gini', 
+                                           max_depth= 10, 
+                                           splitter='best',random_state=self.random_state).fit(X, y_encoded)
+            self.discrete_profiles=discretisation_DT(X, self.discretization_model)
             
-            pass
+            
 
         if self.option_info is True:
             print('Calculate pHat... ', end='')
@@ -77,15 +106,21 @@ class DMC(BaseEstimator, ClassifierMixin):
         self.piTrain = compute_pi(y_encoded, K)
         if self.option_info is True:
             print('Calculate piStar... ', end='')
-        self.piStar = compute_piStar(self.pHat, y_encoded, K, self.L, self.T, N, option_plot, Box)[0]
+        self.piStar = compute_piStar(self.pHat, y_encoded, K, self.L, self.T, self.N, 0, self.box)[0]
         if self.option_info is True:
             print('Finish')
 
         if self.option_info is True:
             print('Model fit compiled')
+        self._is_fitted = True
+        self.classes_ = np.unique(y_encoded)
+        self.X_ = X
+        self.y_ = y
+
+        return self
 
     def predict(self, X, pi=None):
-        check_is_fitted(self)
+        check_is_fitted(self, ['X_', 'y_', 'classes_'])
         if pi is None:
             pi = self.piStar
         return self.label_encoder.inverse_transform(
@@ -115,7 +150,9 @@ class DMC(BaseEstimator, ClassifierMixin):
         return self
 
     def get_params(self, deep=True):
-        return {"T": self.T, "N": self.N}
+        return {"T": self.T, "N": self.N,"discretization":self.discretization,"L":self.L,
+                "random_state":self.random_state,"box":self.box,"option_info":self.option_info }
+       
 
 
 def compute_pi(y: np.ndarray, K: int):
@@ -463,7 +500,7 @@ def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
         return pi_new
 
     # IF BOX-CONSTRAINT == NONE (PROJECTION ONTO THE SIMPLEX)
-    if isinstance(Box, str) == True:
+    if Box is None:
         pi = compute_pi(y_train, K).reshape(1, -1)
         rStar = 0
         piStar = pi
@@ -515,7 +552,7 @@ def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
             graph_convergence(V_iter)
 
     # IF BOX-CONSTRAINT
-    if isinstance(Box, str) == False:
+    if Box is not None:
         pi = compute_pi(y_train, K).reshape(1, -1)
         rStar = 0
         piStar = pi
@@ -568,6 +605,31 @@ def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
 
     return piStar, rStar, RStar, V_iter, stockpi
 
+def discretisation_DT(X, modele) :
+    '''
+    Parameters
+    ----------
+    X : DataFrame
+        Features.
+    modele : Decision Tree Classifier Model
+        Decidion Tree model.
+
+    Returns
+    -------
+    Xdiscr : Vector
+        Discretised features.
+
+    '''
+    Xdiscr = DecisionTreeClassifier.apply(modele, X, check_input=True)
+     # Obtener los índices únicos y su inversa
+    valores_unicos, inversa = np.unique(Xdiscr, return_inverse=True)
+    
+    # Crear un mapeo de índices únicos a valores enteros consecutivos
+    mapeo = {valor: indice + 1 for indice, valor in enumerate(valores_unicos)}
+    
+    # Mapear los valores originales de Xdiscr a sus equivalentes enteros consecutivos
+    Xdiscr_enteros = np.array([mapeo[valor] for valor in Xdiscr])
+    return Xdiscr_enteros
 
 
 
