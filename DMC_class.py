@@ -15,7 +15,6 @@ from sklearn.tree import DecisionTreeClassifier
 
 class DMC(BaseEstimator, ClassifierMixin):
     _parameter_constraints: dict = {
-
         "N": [Interval(numbers.Integral, 1, None, closed="left")],
         "T":[Interval(numbers.Integral, 2, None, closed="left"),StrOptions({"auto"})],
         "discretization":[StrOptions({"kmeans", "DT"})],
