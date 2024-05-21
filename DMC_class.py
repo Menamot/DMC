@@ -17,7 +17,7 @@ class DMC(BaseEstimator, ClassifierMixin):
     _parameter_constraints: dict = {
 
         "N": [Interval(numbers.Integral, 1, None, closed="left")],
-        "T":[Interval(numbers.Integral, 1, None, closed="left"),StrOptions({"auto"})],
+        "T":[Interval(numbers.Integral, 2, None, closed="left"),StrOptions({"auto"})],
         "discretization":[StrOptions({"kmeans", "DT"})],
         "L":["array-like",None],
         "box":["array-like",None],
@@ -41,13 +41,13 @@ class DMC(BaseEstimator, ClassifierMixin):
         N : int, default=1000
             Maximum number of iterations for the algorithm
         T : int or str, default='auto'
-            Number of  discrete profiles. Must be an integer greater than or equal to 1. or 'auto' for automatic determination.
+            Number of  discrete profiles. Must be an integer greater than or equal to 2. or 'auto' for automatic determination.
         discretization : str, default='kmeans'
             Method of discretization to use. Must be 'kmeans' or 'DT'(decision tree).
         L : array-like or None, default=None
             Loss function, default is zero-one loss.
         box : array-like or None, default=None
-            Box constraints for the prios.
+            Box constraints for the piStar.
         random_state : int, RandomState instance or None, default=None
             Seed for random number generator for reproducibility.
         """
@@ -86,6 +86,7 @@ class DMC(BaseEstimator, ClassifierMixin):
             self.discrete_profiles = self.discretization_model.labels_
 
         if self.discretization == "DT":
+            #Consider the situation when t="auto"
             self.discretization_model = DecisionTreeClassifier(ccp_alpha=0.0, 
                                            class_weight=None, 
                                            criterion='gini', 
@@ -103,14 +104,14 @@ class DMC(BaseEstimator, ClassifierMixin):
         self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
         if self.option_info is True:
             print('Finish')
-
+        
         self.piTrain = compute_pi(y_encoded, K)
         if self.option_info is True:
             print('Calculate piStar... ', end='')
         self.piStar = compute_piStar(self.pHat, y_encoded, K, self.L, self.T, self.N, 0, self.box)[0]
         if self.option_info is True:
             print('Finish')
-
+    
         if self.option_info is True:
             print('Model fit compiled')
         self._is_fitted = True
@@ -204,58 +205,38 @@ def compute_pHat(XD: np.ndarray, y: np.ndarray, K: int, T: int):
     for k in range(K):
         Ik = np.where(y == k)[0]
         mk = len(Ik)
-        for t in range(T):
-            pHat[k, t] = np.sum(XD[Ik] == t) / mk
+        pHat[k] = np.bincount(XD[Ik], minlength=T)/mk
+        #Count number of occurrences of each value in array of non-negative ints.
     return pHat
 
-
+from sklearn.metrics import confusion_matrix
 def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, K: int, L: np.ndarray):
-    """
+    '''
+    Function to compute the class-conditional risks.
     Parameters
     ----------
-    y_true : ndarray of shape (n_samples,)
-        Real labels
-
-    y_pred : ndarray of shape (n_samples,)
-        Predicted labels
-
+    YR : DataFrame
+        Real labels.
+    Yhat : Array
+        Predicted labels.
     K : int
-        Number of classes
-
-    L : ndarray of shape (K, K)
-        Loss matrix, where K is the number of unique classes
+        Number of classes.
+    L : Array
+        Loss Function.
 
     Returns
     -------
-    R : ndarray of shape (K,)
-        Conditional risk
+    R : Array of floats
+        Conditional risks.
+    confmat : Matrix
+        Confusion matrix.
+    '''
+    Labels=[i for i in range(K)]
+    confmat=confusion_matrix(np.array(y_true),np.array(y_pred),normalize='true',labels=Labels)
+    R=np.sum(np.multiply(L, confmat),axis=1)
 
-    confmat : ndarray of shape (K, K)
-        Confusion matrix
-    """
-    # Identify all unique classes
-    unique_classes = np.unique(np.concatenate((y_true, y_pred)))
-    class_to_index = {cls: idx for idx, cls in enumerate(unique_classes)}
-
-    # Initialize the confusion matrix
-    confmat = np.zeros((K, K))
-
-    # Populate the confusion matrix
-    for true_class in unique_classes:
-        true_class_index = class_to_index[true_class]
-        Ik = np.where(y_true == true_class)[0]
-        pred_classes_indices = [class_to_index[pred] for pred in y_pred[Ik]]
-        for pred_index in pred_classes_indices:
-            confmat[true_class_index, pred_index] += 1
-
-    # Normalize the rows of the confusion matrix to get probabilities
-    row_sums = confmat.sum(axis=1, keepdims=True)
-    row_sums[row_sums == 0] = 1  # Prevent division by zero for classes not in y_true
-    confmat /= row_sums
-
-    # Calculate the conditional risk for each true category
-    R = np.dot(L, confmat.T).diagonal()
-
+   # Is only the confuns 
+    
     return R, confmat
 
 
@@ -283,6 +264,195 @@ def predict_profile_label(pi, pHat, L):
     lambd = (pi.reshape(-1, 1) * L).T @ pHat
     lbar = np.argmin(lambd, axis=0)
     return lbar
+
+def proj_simplex_Condat(K, pi):
+    """
+    This function is inspired from the article: L.Condat, "Fast projection onto the simplex and the 
+    ball", Mathematical Programming, vol.158, no.1, pp. 575-585, 2016.
+    Parameters
+    ----------
+    K : int
+        Number of classes.
+    pi : Array of floats
+        Vector to project onto the simplex.
+
+    Returns
+    -------
+    piProj : List of floats
+        Priors projected onto the simplex.
+
+    """
+
+    linK = np.linspace(1, K, K)
+    piProj = np.maximum(pi - np.max(((np.cumsum(np.sort(pi)[::-1]) - 1) / (linK[:]))), 0)
+    piProj = piProj / np.sum(piProj)
+    return piProj
+
+def graph_convergence(V_iter):
+    '''
+    Parameters
+    ----------
+    V_iter : List
+        List of value of V at each iteration n.
+
+    Returns
+    -------
+    Plot
+        Plot of V_pibar.
+
+    '''
+
+    figConv = plt.figure(figsize=(8, 4))
+    plt_conv = figConv.add_subplot(1, 1, 1)
+    V = V_iter.copy()
+    V.insert(0, np.min(V))
+    font = {'weight': 'normal', 'size': 16}
+    plt_conv.plot(V, label='V(pi(n))')
+    plt_conv.set_xscale('log')
+    plt_conv.set_ylim(np.min(V), np.max(V) + 0.01)
+    plt_conv.set_xlim(10 ** 0)
+    plt_conv.set_xlabel('Interation n', fontdict=font)
+    plt_conv.set_title('Maximization of V over U', fontdict=font)
+    plt_conv.grid(True)
+    plt_conv.grid(which='minor', axis='x', ls='-.')
+    plt_conv.legend(loc=2, shadow=True)
+
+def num2cell(a):
+    if type(a) is np.ndarray:
+        return [num2cell(x) for x in a]
+    else:
+        return a
+
+def proj_onto_polyhedral_set(pi, Box, K) :
+    '''
+    Parameters
+    ----------
+    pi : Array of floats
+        Vector to project onto the box-constrained simplex.
+    Box : Array
+        {'none', matrix} : Box-constraint on the priors.
+    K : int
+        Number of classes.
+
+    Returns
+    -------
+    piStar : Array of floats
+            Priors projected onto the box-constrained simplex.
+
+    '''
+    
+    # Verification of constraints
+    for i in range(K) :
+        for j in range(2) :
+            if Box[i,j] < 0 :
+                Box[i,j] = 0
+            if Box[i,j] > 1 :
+                Box[i,j] = 1
+
+    # Generate matrix G:
+    U = np.concatenate((np.eye(K), -np.eye(K), np.ones((1,K)), -np.ones((1,K))))            
+    eta = Box[:,1].tolist() + (-Box[:,0]).tolist() + [1] + [-1]
+
+    n = U.shape[0]
+    
+    G = np.zeros((n,n))
+    for i in range(n) :
+        for j in range(n) :
+            G[i,j] = np.vdot(U[i,:],U[j,:])
+    
+    
+    # Generate subsets of {1,...,n}:
+    M = (2**n)-1
+    I = num2cell(np.zeros((1,M)))
+    
+    i = 0
+    for l in range(n) :
+        T = list(combinations(list(range(n)), l+1))
+        for p in range(i,i+len(T)) :
+            I[0][p] = T[p-i]
+        i = i+len(T)
+            
+        
+    # Algorithm    
+        
+    for m in range(M) :
+        Im = I[0][m]
+ 
+        Gmm = np.zeros((len(Im), len(Im)))
+        ligne = 0
+        for i in Im :
+            colonne = 0
+            for j in Im :
+                Gmm[ligne,colonne] = G[i,j]
+                colonne += 1
+            ligne +=1
+        
+
+        if np.linalg.det(Gmm)!=0 :
+            
+            nu = np.zeros((2*K+2,1))
+            w = np.zeros((len(Im),1))
+            for i in range(len(Im)) :
+                w[i] = np.vdot(pi,U[Im[i],:]) - eta[Im[i]]
+            
+            S = np.linalg.solve(Gmm,w) 
+            
+            for e in range(len(S)) :
+                nu[Im[e]] = S[e]
+            
+            
+            if np.any(nu<-10**(-10)) == False  :
+                A = G.dot(nu)
+                z = np.zeros((1,2*K+2))
+                for j in range(2*K+2) :
+                    z[0][j] = np.vdot(pi,U[j,:]) - eta[j] - A[j]
+                    
+                    
+                if np.all(z<=10**(-10)) == True :
+                    pi_new = pi
+                    for i in range(2*K+2) :
+                        pi_new = pi_new - nu[i]*U[i,:]
+
+    piStar = pi_new
+
+    # Remove noisy small calculus errors:
+    piStar = piStar/piStar.sum()
+    
+    return piStar
+
+def proj_onto_U(pi, Box, K) :
+    '''
+    Parameters
+    ----------
+    pi : Array of floats
+        Vector to project onto the box-constrained simplex..
+    Box : Matrix
+        {'none', matrix} : Box-constraint on the priors.
+    K : int
+        Number of classes.
+
+    Returns
+    -------
+    pi_new : Array of floats
+            Priors projected onto the box-constrained simplex.
+
+    '''
+    
+    check_U = 0
+    if pi.sum() ==1 :
+        for k in range(K) :
+            if (pi[0][k] >= Box[k,0]) & (pi[0][k] <= Box[k,1]) :
+                check_U = check_U + 1
+    
+    if check_U == K :
+        pi_new = pi
+
+      
+    if check_U < K :
+        pi_new = proj_onto_polyhedral_set(pi, Box, K)
+    
+    return pi_new
+
 
 
 def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
@@ -320,186 +490,6 @@ def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
         Values of pi at each iteration.
 
     """
-
-    def proj_simplex_Condat(K, pi):
-        """
-        Parameters
-        ----------
-        K : int
-            Number of classes.
-        pi : Array of floats
-            Vector to project onto the simplex.
-
-        Returns
-        -------
-        piProj : List of floats
-            Priors projected onto the simplex.
-
-        """
-
-        linK = np.linspace(1, K, K)
-        piProj = np.maximum(pi - np.max(((np.cumsum(np.sort(pi)[::-1]) - 1) / (linK[:]))), 0)
-        piProj = piProj / np.sum(piProj)
-        return piProj
-
-    def graph_convergence(V_iter):
-        '''
-        Parameters
-        ----------
-        V_iter : List
-            List of value of V at each iteration n.
-
-        Returns
-        -------
-        Plot
-            Plot of V_pibar.
-
-        '''
-
-        figConv = plt.figure(figsize=(8, 4))
-        plt_conv = figConv.add_subplot(1, 1, 1)
-        V = V_iter.copy()
-        V.insert(0, np.min(V))
-        font = {'weight': 'normal', 'size': 16}
-        plt_conv.plot(V, label='V(pi(n))')
-        plt_conv.set_xscale('log')
-        plt_conv.set_ylim(np.min(V), np.max(V) + 0.01)
-        plt_conv.set_xlim(10 ** 0)
-        plt_conv.set_xlabel('Interation n', fontdict=font)
-        plt_conv.set_title('Maximization of V over U', fontdict=font)
-        plt_conv.grid(True)
-        plt_conv.grid(which='minor', axis='x', ls='-.')
-        plt_conv.legend(loc=2, shadow=True)
-
-    def proj_onto_U(pi, Box, K):
-        """
-        Parameters
-        ----------
-        pi : Array of floats
-            Vector to project onto the box-constrained simplex..
-        Box : Matrix
-            {'none', matrix} : Box-constraint on the priors.
-        K : int
-            Number of classes.
-
-        Returns
-        -------
-        pi_new : Array of floats
-                Priors projected onto the box-constrained simplex.
-
-        """
-
-        def proj_onto_polyhedral_set(pi, Box, K):
-            """
-            Parameters
-            ----------
-            pi : Array of floats
-                Vector to project onto the box-constrained simplex.
-            Box : Array
-                {'none', matrix} : Box-constraint on the priors.
-            K : int
-                Number of classes.
-
-            Returns
-            -------
-            piStar : Array of floats
-                    Priors projected onto the box-constrained simplex.
-
-            """
-
-            def num2cell(a):
-                if type(a) is np.ndarray:
-                    return [num2cell(x) for x in a]
-                else:
-                    return a
-
-            # Verification of constraints
-            for i in range(K):
-                for j in range(2):
-                    if Box[i, j] < 0:
-                        Box[i, j] = 0
-                    if Box[i, j] > 1:
-                        Box[i, j] = 1
-
-            # Generate matrix G:
-            U = np.concatenate((np.eye(K), -np.eye(K), np.ones((1, K)), -np.ones((1, K))))
-            eta = Box[:, 1].tolist() + (-Box[:, 0]).tolist() + [1] + [-1]
-
-            n = U.shape[0]
-
-            G = np.zeros((n, n))
-            for i in range(n):
-                for j in range(n):
-                    G[i, j] = np.vdot(U[i, :], U[j, :])
-
-            # Generate subsets of {1,...,n}:
-            M = (2 ** n) - 1
-            I = num2cell(np.zeros((1, M)))
-
-            i = 0
-            for l in range(n):
-                T = list(combinations(list(range(n)), l + 1))
-                for p in range(i, i + len(T)):
-                    I[0][p] = T[p - i]
-                i = i + len(T)
-
-            # Algorithm
-
-            for m in range(M):
-                Im = I[0][m]
-
-                Gmm = np.zeros((len(Im), len(Im)))
-                ligne = 0
-                for i in Im:
-                    colonne = 0
-                    for j in Im:
-                        Gmm[ligne, colonne] = G[i, j]
-                        colonne += 1
-                    ligne += 1
-
-                if np.linalg.det(Gmm) != 0:
-
-                    nu = np.zeros((2 * K + 2, 1))
-                    w = np.zeros((len(Im), 1))
-                    for i in range(len(Im)):
-                        w[i] = np.vdot(pi, U[Im[i], :]) - eta[Im[i]]
-
-                    S = np.linalg.solve(Gmm, w)
-
-                    for e in range(len(S)):
-                        nu[Im[e]] = S[e]
-
-                    if np.any(nu < -10 ** (-10)) == False:
-                        A = G.dot(nu)
-                        z = np.zeros((1, 2 * K + 2))
-                        for j in range(2 * K + 2):
-                            z[0][j] = np.vdot(pi, U[j, :]) - eta[j] - A[j]
-
-                        if np.all(z <= 10 ** (-10)) == True:
-                            pi_new = pi
-                            for i in range(2 * K + 2):
-                                pi_new = pi_new - nu[i] * U[i, :]
-
-            piStar = pi_new
-
-            # Remove noisy small calculus errors:
-            piStar = piStar / piStar.sum()
-
-            return piStar
-        check_U = 0
-        if pi.sum() == 1:
-            for k in range(K):
-                if (pi[0][k] >= Box[k, 0]) & (pi[0][k] <= Box[k, 1]):
-                    check_U = check_U + 1
-
-        if check_U == K:
-            pi_new = pi
-
-        if check_U < K:
-            pi_new = proj_onto_polyhedral_set(pi, Box, K)
-
-        return pi_new
-
     # IF BOX-CONSTRAINT == NONE (PROJECTION ONTO THE SIMPLEX)
     if Box is None:
         pi = compute_pi(y_train, K).reshape(1, -1)
