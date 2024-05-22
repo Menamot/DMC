@@ -1,17 +1,19 @@
+import numbers
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import LabelEncoder
-from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
-from sklearn.utils import check_random_state
-from sklearn.utils._param_validation import Interval, StrOptions
-import numbers
 from itertools import combinations
+from sklearn.cluster import KMeans
+from sklearn.metrics import confusion_matrix
+from sklearn.utils import check_random_state
+from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import GridSearchCV
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.utils._param_validation import Interval, StrOptions
+from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
+
 
 class DMC(BaseEstimator, ClassifierMixin):
     _parameter_constraints: dict = {
@@ -208,7 +210,6 @@ def compute_pHat(XD: np.ndarray, y: np.ndarray, K: int, T: int):
         #Count number of occurrences of each value in array of non-negative ints.
     return pHat
 
-from sklearn.metrics import confusion_matrix
 def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, K: int, L: np.ndarray):
     '''
     Function to compute the class-conditional risks.
