@@ -504,13 +504,11 @@ def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
             # Compute subgradient R at point pi (see equation (21) in the paper)
             lambd = np.dot(L, pi.T * pHat)
             R = np.zeros((1, K))
-            for k in range(0, K):
-                mu_k = 0
-                for t in range(0, T):
-                    lbar = np.argmin(lambd[:, t])
-                    mu_k = mu_k + L[k, lbar] * pHat[k, t]
-                R[0, k] = mu_k
-                stockpi[k, n - 1] = pi[0, k]
+
+            mu_k = np.sum(L[:, np.argmin(lambd, axis=0)] * pHat, axis=1)
+            R[0,:] = mu_k
+            stockpi[:,n-1] = pi[0,:]
+
             r = compute_global_risk(R, pi)
             V_iter.append(r)
             if r > rStar:
@@ -526,13 +524,11 @@ def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
         # Check if pi_N == piStar
         lambd = np.dot(L, pi.T * pHat)
         R = np.zeros((1, K))
-        for k in range(0, K):
-            mu_k = 0
-            for t in range(0, T):
-                lbar = np.argmin(lambd[:, t])
-                mu_k = mu_k + L[k, lbar] * pHat[k, t]
-            R[0, k] = mu_k
-            stockpi[k, n - 1] = pi[0, k]
+
+        mu_k = np.sum(L[:, np.argmin(lambd, axis=0)] * pHat, axis=1)
+        R[0,:] = mu_k
+        stockpi[:,n-1] = pi[0,:]
+
         r = compute_global_risk(R, pi)
         if r > rStar:
             rStar = r
@@ -556,13 +552,11 @@ def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
             # Compute subgradient R at point pi (see equation (21) in the paper)
             lambd = np.dot(L, pi.T * pHat)
             R = np.zeros((1, K))
-            for k in range(0, K):
-                mu_k = 0
-                for t in range(0, T):
-                    lbar = np.argmin(lambd[:, t])
-                    mu_k = mu_k + L[k, lbar] * pHat[k, t]
-                R[0, k] = mu_k
-                stockpi[k, n - 1] = pi[0, k]
+
+            mu_k = np.sum(L[:, np.argmin(lambd, axis=0)] * pHat, axis=1)
+            R[0,:] = mu_k
+            stockpi[:,n-1] = pi[0,:]
+
             r = compute_global_risk(R, pi)
             V_iter.append(r)
             if r > rStar:
@@ -578,13 +572,11 @@ def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
         # Check if pi_N == piStar
         lambd = np.dot(L, pi.T * pHat)
         R = np.zeros((1, K))
-        for k in range(0, K):
-            mu_k = 0
-            for t in range(0, T):
-                lbar = np.argmin(lambd[:, t])
-                mu_k = mu_k + L[k, lbar] * pHat[k, t]
-            R[0, k] = mu_k
-            stockpi[k, n - 1] = pi[0, k]
+
+        mu_k = np.sum(L[:, np.argmin(lambd, axis=0)] * pHat, axis=1)
+        R[0,:] = mu_k
+        stockpi[:,n-1] = pi[0,:]
+            
         r = compute_global_risk(R, pi)
         if r > rStar:
             rStar = r
