@@ -13,18 +13,20 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils._param_validation import Interval, StrOptions
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
-
+from sklearn.preprocessing import KBinsDiscretizer
+from itertools import product
 
 class DMC(BaseEstimator, ClassifierMixin):
     _parameter_constraints: dict = {
         "N": [Interval(numbers.Integral, 1, None, closed="left")],
         "T":[Interval(numbers.Integral, 2, None, closed="left"),StrOptions({"auto"})],
-        "discretization":[StrOptions({"kmeans", "DT"})],
+        "discretization":[StrOptions({"kmeans", "DT","KBins"})],
         "L":["array-like",None],
         "box":["array-like",None],
         "random_state": ["random_state"],
         "min_samples_leaf":[Interval(numbers.Integral, 1, None, closed="left"),StrOptions({"auto"})],
-        "ccp_alpha":[Interval(numbers.Real, 0, None, closed="left")]
+        "ccp_alpha":[Interval(numbers.Real, 0, None, closed="left")],
+        "n_bins": [Interval(numbers.Integral, 5, None, closed="left"),StrOptions({"auto"})]
 
         }
     def __init__(
@@ -37,7 +39,8 @@ class DMC(BaseEstimator, ClassifierMixin):
             random_state=None,
             option_info=False,
             min_samples_leaf="auto", #for treee
-            ccp_alpha=0 #for treee
+            ccp_alpha=0, #for treee
+            n_bins="auto" #for kbins
     ):
         """
         Initialize the DMC model.
@@ -55,11 +58,13 @@ class DMC(BaseEstimator, ClassifierMixin):
             Box constraints for the piStar.
         random_state : int, RandomState instance or None, default=None
             Seed for random number generator for reproducibility.
-        min_samples_leaf: int [0,infity), default=1
+        min_samples_leaf: int [0,infity), default="auto"
             The minimum number of samples required to be at a leaf node. A split point at any depth will only be considered if it leaves at least  (only for DT):
-        ccp_alpha: non negative float, default=0
+        ccp_alpha: non negative float, default="auto"
             Complexity parameter used for Minimal Cost-Complexity Pruning
-    
+
+        n_bins:int default="auto"
+            The number of bins to produce.s
         """
         self.T = T
         self.N = N
@@ -71,6 +76,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         self.min_samples_leaf=min_samples_leaf
         self.ccp_alpha=ccp_alpha
         self.option_info=option_info
+        self.n_bins=n_bins
         
         self._validate_params()
 
@@ -123,8 +129,15 @@ class DMC(BaseEstimator, ClassifierMixin):
             self.discrete_profiles=self.discretisation_DT(X, self.discretization_model)
             self.T=self.discretization_model.get_n_leaves()
             
-            
-
+        if self.discretization=="KBins":
+            if self.n_bins=="auto":
+                self.n_bins=self.get_nbins_optimal(X,y_encoded)["n_bins"]
+            print("fin")
+            self.discretization_model=KBinsDiscretizer(n_bins=self.n_bins, encode='onehot', strategy='uniform')
+            self.discretization_model.fit(X)
+            onehotarrays=self.discretization_model.transform(X).toarray()
+            self.discrete_profiles,self.T=self.map_binary_to_int(onehotarrays)
+        
         if self.option_info is True:
             print('Calculate pHat... ', end='')
         self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
@@ -151,20 +164,30 @@ class DMC(BaseEstimator, ClassifierMixin):
         check_is_fitted(self, ['X_', 'y_', 'classes_'])
         if pi is None:
             pi = self.piStar
+        #print(predict_profile_label(pi, self.pHat, self.L))
+        if self.discretization=="kmeans":
+            discrete_profiles=self.discretization_model.predict(X)
+        if self.discretization=="DT":
+            discrete_profiles=self.discretisation_DT(X, self.discretization_model)
+
+        if self.discretization=="KBins":
+            onehotarrays=self.discretization_model.transform(X).toarray()
+            discrete_profiles,self.T=self.map_binary_to_int(onehotarrays)
+
         return self.label_encoder.inverse_transform(
-            predict_profile_label(pi, self.pHat, self.L)[self.discretization_model.predict(X)]
+            predict_profile_label(pi, self.pHat, self.L)[discrete_profiles]
         )
 
     def predict_prob(self, X, pi=None):
+        #I think we have to change this
         check_is_fitted(self)
         if pi is None:
             pi = self.piStar
         lambd = (pi.reshape(-1, 1) * self.L).T @ self.pHat
         prob = lambd / np.sum(lambd, axis=0)
-        return prob[:, self.discretization_model.predict(X)].T
+        return prob[:, self.discretization_model.predict(X)].T 
 
     def get_T_optimal(self, X, y, T_start=10, T_end=100, T_step=10):
-        print("hola")
         param_grid = {
             'T': np.linspace(T_start, T_end, T_step, dtype=int)
         }
@@ -180,6 +203,15 @@ class DMC(BaseEstimator, ClassifierMixin):
         grid_search.fit(X, y)
         return grid_search.best_params_
     # Function set_params and get_params are used to gridsearchCV in sklearn
+    def get_nbins_optimal(self,X,y):
+        print("hola")
+        param_grid = {
+            'n_bins': np.linspace(2, 7, 1, dtype=int)
+        }
+        grid_search = GridSearchCV(estimator=self, param_grid=param_grid, cv=2)
+        grid_search.fit(X, y)
+        return grid_search.best_params_
+    
     def set_params(self, **params):
         for parameter, value in params.items():
             setattr(self, parameter, value)
@@ -188,7 +220,8 @@ class DMC(BaseEstimator, ClassifierMixin):
     def get_params(self, deep=True):
         return {"T": self.T, "N": self.N,"discretization":self.discretization,"L":self.L,
                 "random_state":self.random_state,"box":self.box,"option_info":self.option_info,
-                "min_samples_leaf":self.min_samples_leaf,"ccp_alpha":self.ccp_alpha}
+                "min_samples_leaf":self.min_samples_leaf,"ccp_alpha":self.ccp_alpha,
+                "n_bins":self.n_bins}
        
     def discretisation_DT(self,X, modele) :
         '''
@@ -215,6 +248,25 @@ class DMC(BaseEstimator, ClassifierMixin):
         # Mapear los valores originales de Xdiscr a sus equivalentes enteros consecutivos
         Xdiscr_enteros = np.array([mapeo[valor] for valor in Xdiscr])
         return Xdiscr_enteros
+
+    def map_binary_to_int(self,array_binary,l=None):
+
+        '''
+        funcion que mapea un array binario (0,1,...,0,1) hacia un entero 0,1,..,2^l-1
+        input:
+        array_binary: array like:
+        array binario
+
+        l: int:
+        length of the array
+        '''
+        l=len(array_binary[0])
+        combinaciones = list(product([0, 1], repeat=l))
+
+        diccionario_combinaciones = {tuple(comb): i for i, comb in enumerate(combinaciones)}
+        enteros_mapeados = [diccionario_combinaciones[tuple(fila)] for fila in list(array_binary)]
+        return np.array(enteros_mapeados), len(combinaciones)
+
 
 def compute_pi(y: np.ndarray, K: int):
     """
