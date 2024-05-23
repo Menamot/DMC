@@ -23,6 +23,8 @@ class DMC(BaseEstimator, ClassifierMixin):
         "L":["array-like",None],
         "box":["array-like",None],
         "random_state": ["random_state"],
+        "min_samples_leaf":[Interval(numbers.Integral, 1, None, closed="left"),StrOptions({"auto"})],
+        "ccp_alpha":[Interval(numbers.Real, 0, None, closed="left")]
 
         }
     def __init__(
@@ -33,7 +35,9 @@ class DMC(BaseEstimator, ClassifierMixin):
             L=None,
             box=None,
             random_state=None,
-            option_info=False
+            option_info=False,
+            min_samples_leaf="auto", #for treee
+            ccp_alpha=0 #for treee
     ):
         """
         Initialize the DMC model.
@@ -51,6 +55,11 @@ class DMC(BaseEstimator, ClassifierMixin):
             Box constraints for the piStar.
         random_state : int, RandomState instance or None, default=None
             Seed for random number generator for reproducibility.
+        min_samples_leaf: int [0,infity), default=1
+            The minimum number of samples required to be at a leaf node. A split point at any depth will only be considered if it leaves at least  (only for DT):
+        ccp_alpha: non negative float, default=0
+            Complexity parameter used for Minimal Cost-Complexity Pruning
+    
         """
         self.T = T
         self.N = N
@@ -59,7 +68,10 @@ class DMC(BaseEstimator, ClassifierMixin):
         self.label_encoder = LabelEncoder()
         self.L =L
         self.random_state=random_state
+        self.min_samples_leaf=min_samples_leaf
+        self.ccp_alpha=ccp_alpha
         self.option_info=option_info
+        
         self._validate_params()
 
     def fit(self, X, y, **paramT):
@@ -88,14 +100,27 @@ class DMC(BaseEstimator, ClassifierMixin):
 
         if self.discretization == "DT":
             #Consider the situation when t="auto"
-            self.discretization_model = DecisionTreeClassifier(ccp_alpha=0.0, 
-                                           class_weight=None, 
-                                           criterion='gini', 
-                                           max_depth= 4, 
-                                           min_samples_leaf=50 ,
-                                            max_features= 'sqrt',
-                                           splitter='best',random_state=self.random_state).fit(X, y_encoded)
-            self.discrete_profiles=discretisation_DT(X, self.discretization_model)
+            clf = DecisionTreeClassifier()
+            path=clf.cost_complexity_pruning_path(X, y_encoded)
+            ccp_alphas, impurities = path.ccp_alphas, path.impurities
+
+            if self.min_samples_leaf=='auto' or self.ccp_alpha == 'auto':
+                parameters_tree = self.get_Tree_optimal(X, y_encoded, alphas=ccp_alphas)
+            if self.min_samples_leaf == 'auto':
+                self.min_samples_leaf = parameters_tree['min_samples_leaf']
+            if self.ccp_alpha == 'auto':
+                self.ccp_alpha = parameters_tree['ccp_alpha']
+                #self.min_samples_leaf=parameters_tree['min_samples_leaf']
+
+            self.discretization_model = DecisionTreeClassifier(ccp_alpha=self.ccp_alpha, 
+                                           class_weight="balanced", 
+                                           criterion='entropy', 
+                                           min_samples_leaf= self.min_samples_leaf,
+                                        max_features= 'sqrt',
+                                           splitter='random',
+                                           random_state=self.random_state).fit(X, y_encoded)
+            
+            self.discrete_profiles=self.discretisation_DT(X, self.discretization_model)
             self.T=self.discretization_model.get_n_leaves()
             
             
@@ -139,13 +164,21 @@ class DMC(BaseEstimator, ClassifierMixin):
         return prob[:, self.discretization_model.predict(X)].T
 
     def get_T_optimal(self, X, y, T_start=10, T_end=100, T_step=10):
+        print("hola")
         param_grid = {
             'T': np.linspace(T_start, T_end, T_step, dtype=int)
         }
         grid_search = GridSearchCV(estimator=self, param_grid=param_grid, cv=2)
         grid_search.fit(X, y)
         return grid_search.best_params_
-
+    
+    def get_Tree_optimal(self,X,y,alphas):
+        print("hola")
+        parameters={"min_samples_leaf":np.linspace(4, 100, 10, dtype=int),
+                    "ccp_alphas":alphas}
+        grid_search = GridSearchCV(estimator=self, param_grid=parameters, cv=2)
+        grid_search.fit(X, y)
+        return grid_search.best_params_
     # Function set_params and get_params are used to gridsearchCV in sklearn
     def set_params(self, **params):
         for parameter, value in params.items():
@@ -154,9 +187,34 @@ class DMC(BaseEstimator, ClassifierMixin):
 
     def get_params(self, deep=True):
         return {"T": self.T, "N": self.N,"discretization":self.discretization,"L":self.L,
-                "random_state":self.random_state,"box":self.box,"option_info":self.option_info }
+                "random_state":self.random_state,"box":self.box,"option_info":self.option_info,
+                "min_samples_leaf":self.min_samples_leaf,"ccp_alpha":self.ccp_alpha}
        
+    def discretisation_DT(self,X, modele) :
+        '''
+        Parameters
+        ----------
+        X : DataFrame
+        Features.
+        modele : Decision Tree Classifier Model
+        Decidion Tree model.
 
+        Returns
+        -------
+        Xdiscr : Vector
+            Discretised features.
+
+        '''
+        Xdiscr = DecisionTreeClassifier.apply(modele, X, check_input=True)
+         # Obtener los índices únicos y su inversa
+        valores_unicos, inversa = np.unique(Xdiscr, return_inverse=True)
+    
+        # Crear un mapeo de índices únicos a valores enteros consecutivos
+        mapeo = {valor: indice  for indice, valor in enumerate(valores_unicos)}
+    
+        # Mapear los valores originales de Xdiscr a sus equivalentes enteros consecutivos
+        Xdiscr_enteros = np.array([mapeo[valor] for valor in Xdiscr])
+        return Xdiscr_enteros
 
 def compute_pi(y: np.ndarray, K: int):
     """
@@ -588,31 +646,7 @@ def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
 
     return piStar, rStar, RStar, V_iter, stockpi
 
-def discretisation_DT(X, modele) :
-    '''
-    Parameters
-    ----------
-    X : DataFrame
-        Features.
-    modele : Decision Tree Classifier Model
-        Decidion Tree model.
 
-    Returns
-    -------
-    Xdiscr : Vector
-        Discretised features.
-
-    '''
-    Xdiscr = DecisionTreeClassifier.apply(modele, X, check_input=True)
-     # Obtener los índices únicos y su inversa
-    valores_unicos, inversa = np.unique(Xdiscr, return_inverse=True)
-    
-    # Crear un mapeo de índices únicos a valores enteros consecutivos
-    mapeo = {valor: indice + 1 for indice, valor in enumerate(valores_unicos)}
-    
-    # Mapear los valores originales de Xdiscr a sus equivalentes enteros consecutivos
-    Xdiscr_enteros = np.array([mapeo[valor] for valor in Xdiscr])
-    return Xdiscr_enteros
 
 
 
