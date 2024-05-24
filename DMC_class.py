@@ -15,7 +15,7 @@ from sklearn.utils._param_validation import Interval, StrOptions
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.preprocessing import KBinsDiscretizer
 from itertools import product
-
+#test
 class DMC(BaseEstimator, ClassifierMixin):
     _parameter_constraints: dict = {
         "N": [Interval(numbers.Integral, 1, None, closed="left")],
