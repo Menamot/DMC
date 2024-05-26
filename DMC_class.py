@@ -2,8 +2,11 @@ import numbers
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import skfuzzy as fuzz
 
+from itertools import product
 from itertools import combinations
+
 from sklearn.cluster import KMeans
 from sklearn.metrics import confusion_matrix
 from sklearn.utils import check_random_state
@@ -14,24 +17,26 @@ from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils._param_validation import Interval, StrOptions
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.preprocessing import KBinsDiscretizer
-from itertools import product
-#test
+
+
 class DMC(BaseEstimator, ClassifierMixin):
     _parameter_constraints: dict = {
         "N": [Interval(numbers.Integral, 1, None, closed="left")],
-        "T":[Interval(numbers.Integral, 2, None, closed="left"),StrOptions({"auto"})],
-        "discretization":[StrOptions({"kmeans", "DT","KBins"})],
-        "L":["array-like",None],
-        "box":["array-like",None],
+        "T": [Interval(numbers.Integral, 2, None, closed="left"), StrOptions({"auto"})],
+        "m": [Interval(numbers.Real,1,None, closed="neither")],
+        "discretization": [StrOptions({"kmeans", "DT", "KBins", "cmeans"})],
+        "L": ["array-like", None],
+        "box": ["array-like", None],
         "random_state": ["random_state"],
-        "min_samples_leaf":[Interval(numbers.Integral, 1, None, closed="left"),StrOptions({"auto"})],
-        "ccp_alpha":[Interval(numbers.Real, 0, None, closed="left")],
-        "n_bins": [Interval(numbers.Integral, 5, None, closed="left"),StrOptions({"auto"})]
+        "min_samples_leaf": [Interval(numbers.Integral, 1, None, closed="left"), StrOptions({"auto"})],
+        "ccp_alpha": [Interval(numbers.Real, 0, None, closed="left")],
+        "n_bins": [Interval(numbers.Integral, 5, None, closed="left"), StrOptions({"auto"})]
 
         }
     def __init__(
             self,
-            T="auto", 
+            T="auto",
+            m=1.5,
             N=1000,
             discretization='kmeans', 
             L=None,
@@ -66,17 +71,22 @@ class DMC(BaseEstimator, ClassifierMixin):
         n_bins:int default="auto"
             The number of bins to produce.s
         """
+        self.piStar = None
+        self.piTrain = None
+        self.pHat = None
         self.T = T
         self.N = N
+        self.L = L
+        self.m = m
         self.discretization = discretization
-        self.box=box
+        self.box = box
         self.label_encoder = LabelEncoder()
-        self.L =L
-        self.random_state=random_state
-        self.min_samples_leaf=min_samples_leaf
-        self.ccp_alpha=ccp_alpha
-        self.option_info=option_info
-        self.n_bins=n_bins
+
+        self.random_state = random_state
+        self.min_samples_leaf = min_samples_leaf
+        self.ccp_alpha = ccp_alpha
+        self.option_info = option_info
+        self.n_bins = n_bins
         
         self._validate_params()
 
@@ -84,7 +94,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         self.random_state = check_random_state(self.random_state)
         if isinstance(X, pd.DataFrame):
             X = X.to_numpy()
-        if isinstance(y, pd.DataFrame):#Convert y to a numpy array if is a Dataframe
+        if isinstance(y, pd.DataFrame): # Convert y to a numpy array if is a Dataframe
             y = y.to_numpy().ravel()  # Use ravel() to make sure that y is one-dimensional
 
         y_encoded = self.label_encoder.fit_transform(y)
@@ -103,14 +113,15 @@ class DMC(BaseEstimator, ClassifierMixin):
             self.discretization_model = KMeans(n_clusters=self.T,random_state=self.random_state)
             self.discretization_model.fit(X)
             self.discrete_profiles = self.discretization_model.labels_
-
-        if self.discretization == "DT":
-            #Consider the situation when t="auto"
+            self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
+            
+        elif self.discretization == "DT":
+            # Consider the situation when t="auto"
             clf = DecisionTreeClassifier()
             path=clf.cost_complexity_pruning_path(X, y_encoded)
             ccp_alphas, impurities = path.ccp_alphas, path.impurities
 
-            if self.min_samples_leaf=='auto' or self.ccp_alpha == 'auto':
+            if self.min_samples_leaf == 'auto' or self.ccp_alpha == 'auto':
                 parameters_tree = self.get_Tree_optimal(X, y_encoded, alphas=ccp_alphas)
             if self.min_samples_leaf == 'auto':
                 self.min_samples_leaf = parameters_tree['min_samples_leaf']
@@ -128,31 +139,31 @@ class DMC(BaseEstimator, ClassifierMixin):
             
             self.discrete_profiles=self.discretisation_DT(X, self.discretization_model)
             self.T=self.discretization_model.get_n_leaves()
+            self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
             
-        if self.discretization=="KBins":
-            if self.n_bins=="auto":
-                self.n_bins=self.get_nbins_optimal(X,y_encoded)["n_bins"]
+        elif self.discretization == "KBins":
+            if self.n_bins == "auto":
+                self.n_bins = self.get_nbins_optimal(X,y_encoded)["n_bins"]
             print("fin")
-            self.discretization_model=KBinsDiscretizer(n_bins=self.n_bins, encode='onehot', strategy='uniform')
+            self.discretization_model = KBinsDiscretizer(n_bins=self.n_bins, encode='onehot', strategy='uniform')
             self.discretization_model.fit(X)
-            onehotarrays=self.discretization_model.transform(X).toarray()
-            self.discrete_profiles,self.T=self.map_binary_to_int(onehotarrays)
-        
-        if self.option_info is True:
-            print('Calculate pHat... ', end='')
-        self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
-        if self.option_info is True:
-            print('Finish')
+            onehotarrays = self.discretization_model.transform(X).toarray()
+            self.discrete_profiles, self.T = self.map_binary_to_int(onehotarrays)
+            self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
+            
+        elif self.discretization == "cmeans":
+            self.cntr, u, _, _, _, _, _ = fuzz.cluster.cmeans(
+                X.T,  # 转置数据，因为算法期望数据是以列为特征的
+                c=self.T,  # 聚类的数量
+                m=self.m,  # 隶属度的模糊系数
+                error=0.005,  # 停止条件
+                maxiter=2000,  # 最大迭代次数
+                init=None  # 初始化聚类中心
+            )
+            self.pHat = compute_pHat_with_cmeans(u, y_encoded, K)
         
         self.piTrain = compute_pi(y_encoded, K)
-        if self.option_info is True:
-            print('Calculate piStar... ', end='')
         self.piStar = compute_piStar(self.pHat, y_encoded, K, self.L, self.T, self.N, 0, self.box)[0]
-        if self.option_info is True:
-            print('Finish')
-    
-        if self.option_info is True:
-            print('Model fit compiled')
         self._is_fitted = True
         self.classes_ = np.unique(y_encoded)
         self.X_ = X
@@ -167,12 +178,18 @@ class DMC(BaseEstimator, ClassifierMixin):
         #print(predict_profile_label(pi, self.pHat, self.L))
         if self.discretization=="kmeans":
             discrete_profiles=self.discretization_model.predict(X)
-        if self.discretization=="DT":
+
+        elif self.discretization=="DT":
             discrete_profiles=self.discretisation_DT(X, self.discretization_model)
 
-        if self.discretization=="KBins":
+        elif self.discretization=="KBins":
             onehotarrays=self.discretization_model.transform(X).toarray()
             discrete_profiles,self.T=self.map_binary_to_int(onehotarrays)
+
+        elif self.discretization == 'cmeans':
+            u_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(X.T, self.cntr, m=self.m, error=0.005, maxiter=1000)
+            prob = delta_proba_U(u_pred, self.pHat, pi, self.L)
+            return np.argmax(prob,axis=1)
 
         return self.label_encoder.inverse_transform(
             predict_profile_label(pi, self.pHat, self.L)[discrete_profiles]
@@ -183,9 +200,14 @@ class DMC(BaseEstimator, ClassifierMixin):
         check_is_fitted(self)
         if pi is None:
             pi = self.piStar
-        lambd = (pi.reshape(-1, 1) * self.L).T @ self.pHat
-        prob = lambd / np.sum(lambd, axis=0)
-        return prob[:, self.discretization_model.predict(X)].T 
+        if self.discretization == 'kmeans':
+            lambd = (pi.reshape(-1, 1) * self.L).T @ self.pHat
+            prob = lambd / np.sum(lambd, axis=0)
+            return prob[:, self.discretization_model.predict(X)].T
+        elif self.discretization == 'cmeans':
+            u_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(X.T, self.cntr, m=self.m, error=0.005, maxiter=1000)
+            prob = delta_proba_U(u_pred, self.pHat, pi, self.L)
+            return prob
 
     def get_T_optimal(self, X, y, T_start=10, T_end=100, T_step=10):
         param_grid = {
@@ -319,6 +341,74 @@ def compute_pHat(XD: np.ndarray, y: np.ndarray, K: int, T: int):
         pHat[k] = np.bincount(XD[Ik], minlength=T)/mk
         #Count number of occurrences of each value in array of non-negative ints.
     return pHat
+
+
+def compute_pHat_with_cmeans(u, YRTrain, K):
+    T = u.shape[0]
+    pHat = np.zeros((K, T))
+    for k in range(K):
+        Ik = np.where(YRTrain == k)[0]
+        mk = Ik.size
+        for t in range(T):
+            if mk > 0:  # 确保分母不为零
+                pHat[k, t] = np.sum(u[t, Ik]) / mk
+    return pHat
+
+
+def delta_proba_U(U, pHat, pi, L, methode='before', temperature=0):
+    '''
+    Parameters
+    ----------
+    U : Array
+
+    pHat : Array of floats
+        Probability estimate of observing the features profile.
+    pi : Array of floats
+        Real class proportions.
+    L : Array
+        Loss function.
+
+    Returns
+    -------
+    Yhat : Vector
+        Predicted labels.
+    '''
+
+    def softmin_with_temperature(X, temperature=1.0, axis=1):
+        X = -X
+        X_max = np.max(X, axis=axis, keepdims=True)
+        X_adj = X - X_max
+
+        # 计算带温度参数的softmax
+        exp_X_adj = np.exp(X_adj / temperature)
+        softmax_output = exp_X_adj / np.sum(exp_X_adj, axis=axis, keepdims=True)
+
+        return softmax_output
+
+    lambd = U.T @ ((pi.T * L).T @ pHat).T
+
+    if methode == 'softmin':
+        prob = softmin_with_temperature(lambd, temperature)
+
+    elif methode == 'argmin':
+        prob = np.zeros_like(lambd)
+        rows = np.arange(lambd.shape[0])
+        cols = np.argmin(lambd, axis=1)
+        prob[rows, cols] = 1
+
+    elif methode == 'proportion':
+        prob = 1 - np.divide(lambd, np.sum(lambd, axis=1)[:, np.newaxis])
+
+    elif methode == 'before':
+        prob = 1 - np.divide(lambd, np.sum(lambd, axis=1)[:, np.newaxis])
+
+    elif methode == 'after':
+        prob_init = 1 - np.divide(lambd, np.sum(lambd, axis=1)[:, np.newaxis])
+        index = np.argmax(prob_init, axis=1)
+        prob = np.zeros_like(prob_init)
+        prob[np.arange(index.shape[0]), index] = 1
+    return prob
+
 
 def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, K: int, L: np.ndarray):
     '''
