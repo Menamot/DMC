@@ -184,9 +184,9 @@ class DMC(BaseEstimator, ClassifierMixin):
             prob = delta_proba_U(u_pred, self.pHat, pi, self.L)
             return prob
 
-    def get_T_optimal(self, X, y, T_start=10, T_end=150, T_step=140):
+    def get_T_optimal(self, X, y, T_start=10, T_end=150, Num_t_Values=140):
         param_grid = {
-            'T': np.linspace(T_start, T_end, T_step, dtype=int)
+            'T': np.linspace(T_start, T_end, Num_t_Values, dtype=int)
         }
         grid_search = GridSearchCV(estimator=self, param_grid=param_grid, cv=2,scoring=gloabl_risk, error_score='raise')
         grid_search.fit(X, y)
