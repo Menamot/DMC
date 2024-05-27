@@ -104,7 +104,8 @@ class DMC(BaseEstimator, ClassifierMixin):
                 self.T = self.get_T_optimal(X, y_encoded, **paramT)['T']
                 if self.option_info is True:
                     print('Finish')
-            self.discretization_model = KMeans(n_clusters=self.T,random_state=self.random_state)
+            self.discretization_model = KMeans(n_clusters=self.T,random_state=self.random_state,
+                                               init="k-means++")
             self.discretization_model.fit(X)
             self.discrete_profiles = self.discretization_model.labels_
             self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
@@ -142,7 +143,7 @@ class DMC(BaseEstimator, ClassifierMixin):
             self.pHat = compute_pHat_with_cmeans(u, y_encoded, K)
         
         self.piTrain = compute_pi(y_encoded, K)
-        self.piStar = compute_piStar(self.pHat, y_encoded, K, self.L, self.T, self.N, 0, self.box)[0]
+        self.piStar, rStar, self.RStar, V_iter, stockpi = compute_piStar(self.pHat, y_encoded, K, self.L, self.T, self.N, 0, self.box)
         self._is_fitted = True
         self.classes_ = np.unique(y_encoded)
         self.X_ = X
@@ -184,7 +185,7 @@ class DMC(BaseEstimator, ClassifierMixin):
             prob = delta_proba_U(u_pred, self.pHat, pi, self.L)
             return prob
 
-    def get_T_optimal(self, X, y, T_start=10, T_end=150, Num_t_Values=140):
+    def get_T_optimal(self, X, y, T_start=5, T_end=100, Num_t_Values=95):
         param_grid = {
             'T': np.linspace(T_start, T_end, Num_t_Values, dtype=int)
         }
@@ -193,7 +194,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         return grid_search.best_params_
     
     def get_Tree_optimal(self,X,y):
-        parameters={"min_samples_leaf":np.linspace(4, 100, 20, dtype=int)}
+        parameters={"min_samples_leaf":np.linspace(1, 20, 20, dtype=int)}
         grid_search = GridSearchCV(estimator=self, param_grid=parameters, cv=2,scoring=gloabl_risk)
         grid_search.fit(X, y)
         return grid_search.best_params_
@@ -235,6 +236,103 @@ class DMC(BaseEstimator, ClassifierMixin):
         Xdiscr_enteros = np.array([mapeo[valor] for valor in Xdiscr])
         return Xdiscr_enteros
 
+
+class SDMC(BaseEstimator, ClassifierMixin):
+    _parameter_constraints: dict = {
+        "L": ["array-like", None],
+        "Alpha": ["array-like",None],
+        "Lambd": [Interval(numbers.Integral, 1, None, closed="left")],
+        "Eps":  [Interval(numbers.Real,0,5, closed="neither")],
+        "N": [Interval(numbers.Integral, 1, None, closed="left")],
+        "box": ["array-like", None],
+        "random_state": ["random_state"],
+        }
+    def __init__(
+            self,
+            L=None,
+            Alpha=None,
+            Lambd=1,
+            Eps=0.0001,
+            N=10000,
+            box=None,
+            random_state=None
+
+    ):
+        self.L=L
+        self.Alpha=Alpha
+        self.lambd=Lambd
+        self.Eps=Eps
+        self.N=N
+        self.box=box
+        self.random_state=random_state
+        self.label_encoder = LabelEncoder()
+        self._validate_params()
+
+    def fit(self,X,y,pHat=None,discretization_model=None,piDMC=None,RstarDMC=None):
+        self.pHat=pHat
+        self.discretization_model=discretization_model
+        self.piDMC=piDMC
+        self.RstarDMC=RstarDMC
+        params = [self.pHat, self.discretization_model, self.piDMC, self.RstarDMC]
+        if any(param is None for param in params) and not all(param is None for param in params):
+            raise ValueError("All or none of pHat, discretization_model, piDMC, and RstarDMC must be initialized.")
+        self.random_state = check_random_state(self.random_state)
+        if isinstance(X, pd.DataFrame):
+            X = X.to_numpy()
+        if isinstance(y, pd.DataFrame): # Convert y to a numpy array if is a Dataframe
+            y = y.to_numpy().ravel()  # Use ravel() to make sure that y is one-dimensional
+        y_encoded = self.label_encoder.fit_transform(y)
+
+        self.k = len(np.unique(y_encoded))
+        if self.L is None:
+            self.L = np.ones((self.k, self.k)) - np.eye(self.k)
+        if self.Alpha is None:
+            self.Alpha=np.ones((1,2))[0]
+        if any(param is None for param in params):
+            print("hola")
+            model=DMC()
+            model.fit(X,y)
+            self.pHat=model.pHat
+            self.discretization_model=model.discretization_model
+            self.piDMC=model.piStar
+            self.RstarDMC=model.RStar
+        self.pistar=SoftminDMC_compute_G_root_MonteCarlo(self.k, self.L, self.pHat, self.lambd,self.N, self.Alpha, self.Eps)
+        print("sii")
+        self._is_fitted = True
+        self.find_lamda(delta=100)  
+        return self
+    
+    def predict(self,X,discretization="kmeans"):
+        if discretization=="kmeans":
+            discrete_profiles=self.discretization_model.predict(X)
+
+        elif discretization=="DT":
+            discrete_profiles=self.discretisation_DT(X, self.discretization_model)
+
+        Ypredict,self.OutputProba=SoftminDMC_predict(discrete_profiles, self.k, self.L
+                                 ,self.pHat, self.pistar, self.lambd)
+
+
+        return Ypredict
+    def find_lamda(self,delta=1,k=2,lambd=0):
+        if lambd==0:
+            Rhat=SoftminDMC_compute_CondRisks(k, self.L, self.pHat, self.piDMC, self.lambd)
+            V_pi = self.piDMC[0].dot(Rhat)
+            while V_pi>np.max(self.RstarDMC):
+                self.lambd=self.lambd+delta
+                Rhat=SoftminDMC_compute_CondRisks(k, self.L, self.pHat, self.piDMC, self.lambd)
+                V_pi = self.piDMC[0].dot(Rhat)
+        else:
+            self.lambd=lambd
+
+    def set_params(self, **params):
+        for parameter, value in params.items():
+            setattr(self, parameter, value)
+        return self
+
+    def get_params(self, deep=True):
+        return {"L": self.L, "Alpha": self.Alpha,"Lambd":self.lambd,"Eps":self.Eps,
+                "random_state":self.random_state,"box":self.box,"N":self.N}
 def compute_pi(y: np.ndarray, K: int):
     """
     Parameters
@@ -743,12 +841,168 @@ def compute_piStar(pHat, y_train, K, L, T, N, optionPlot, Box):
     return piStar, rStar, RStar, V_iter, stockpi
 
 
+def SoftminDMC_compute_CondRisks(K, L, pHat, pi, lambd):
+    '''
+    Parameters
+    ----------
+    K : int
+        Number of classes.
+    L : Array
+        Loss function.
+    pHat : Array of floats
+        Probability estimate of observing the features profile.
+    pi : Array (a unique line) of floats
+        Priors.
+    lambd : Float
+        Positive Temperature parameter.
+    
+    Returns
+    -------
+    R_softminDMC : Array
+        Values of the class-conditional risks at the point pi.
+    '''
+    
+    T = pHat.shape[1]
+    
+    # Compute F using vectorized operations
+    F = np.einsum('jl,jt,j->lt', L, pHat, pi[0])
+    
+    # Compute NUM_SIGM and DENUM_SIGM using vectorized operations
+    NUM_SIGM = np.exp(-lambd * F)
+    DENUM_SIGM = np.sum(NUM_SIGM, axis=0)
+    
+    # Compute sigma_l
+    sigma = NUM_SIGM / DENUM_SIGM
+    
+    # Compute mu_k and R_softminDMC using vectorized operations
+    R_softminDMC = np.einsum('kl,kt,lt->k', L, pHat, sigma)
+    
+    return R_softminDMC
 
+def SoftminDMC_compute_G_root_MonteCarlo(K, L, pHat, lambd, N, Alpha, epsilon):
+    '''
+    Parameters
+    ----------
+    K : int
+        Number of classes.
+    L : Array
+        Loss function.
+    pHat : Array of floats
+        Probability estimate of observing the features profile.
+    pi : Array (a unique line) of floats
+        Priors.
+    lambd : Float
+        Positive Temperature parameter.
+    N : int
+        Maximum number of iterations for the imulated annealing algorithm.
+    Alpha : Array
+        Parameter for the Dirichlet distribution.
+    epsilon : Float
+        Positive threshold allowing to accept piSTAR.
+    
+    Returns
+    -------
+    piSTAR : Array
+        The priors for which the application G vanishes.
+        
+    '''
+    
+    c = np.sum(np.sum(L,1)*np.sum(L,1))
+    piSTAR = np.random.dirichlet(Alpha,1)
+    normGpiStar = compute_normGpi(K, L, pHat, piSTAR, lambd)
+    pi = np.copy(piSTAR)
+    normGpi = normGpiStar
+    
+    for n in range(0, N):
+        
+        if normGpi < normGpiStar:
+            normGpiStar = normGpi
+            piSTAR[:] = pi[:]
+        
+            if normGpiStar <= epsilon:
+                break
+                
+        tau = np.random.dirichlet(Alpha,1)
+        normGtau = compute_normGpi(K, L, pHat, tau, lambd)
+        pi[:] = tau[:]
+        normGpi = normGtau   
+    return piSTAR
 
+def compute_normGpi(K, L, pHat, pi, lambd):
+    '''
+    Parameters
+    ----------
+    K : int
+        Number of classes.
+    L : Array
+        Loss function.
+    pHat : Array of floats
+        Probability estimate of observing the features profile.
+    pi : Array (a unique line) of floats
+        Priors.
+    lambd : Float
+        Positive Temperature parameter.
+    
+    Returns
+    -------
+    normGpi : Float
+        Value of the norm of G(pi).
+        
+    '''
+    
+    R_softminDMC = SoftminDMC_compute_CondRisks(K, L, pHat, pi, lambd)
+    V_pi = pi[0].dot(R_softminDMC)
+    normGpi = np.linalg.norm(R_softminDMC-V_pi)
 
+    return normGpi
 
+def SoftminDMC_predict(XD, K, L, pHat, pi, lambd):
+    '''
+    Parameters
+    ----------
+    X : DataFrame
+        Features of the instances.
+    K : int
+        Number of classes.
+    L : Array
+        Loss function.
+    discretization : str
+        The type of discretization used
+    modele : kmeans or Decision Tree classifier model
+        The model for the discretization
+    pHat : Array of floats
+        Probability estimate of observing the features profile.
+    pi : Array of floats
+        Priors.
+    lambd : Float
+        Positive Temperature parameter.
+    
+    Returns
+    -------
+    Yhat : Array
+        Predicted labels.
+    OutputProba : Array
+        Estimated probabilties of each instance to belong in each class.
 
-
+    '''
+   
+    num_instances = XD.shape[0]
+    Yhat = np.zeros((num_instances, 1), dtype=int)
+    OutputProba = np.zeros((num_instances, K))
+    
+    for i in range(num_instances):
+        t = int(XD[i])
+        F = np.zeros(K)
+        NUM_SIGM = np.zeros(K)
+        
+        for l in range(K):
+            F[l] = np.sum(L[:, l] * pi[0, :] * pHat[:, t])
+            NUM_SIGM[l] = np.exp(-lambd * F[l])
+        
+        OutputProba[i, :] = NUM_SIGM / np.sum(NUM_SIGM)
+        Yhat[i, 0] = np.argmax(np.random.multinomial(1, OutputProba[i, :]))
+    
+    return Yhat, OutputProba
 
 
 
