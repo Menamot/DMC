@@ -2,7 +2,7 @@ import numbers
 import numpy as np
 import pandas as pd     
 import matplotlib.pyplot as plt
-#import skfuzzy as fuzz
+import skfuzzy as fuzz
 
 from itertools import product
 from itertools import combinations
