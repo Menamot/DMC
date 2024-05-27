@@ -1,6 +1,6 @@
 import numbers
 import numpy as np
-import pandas as pd
+import pandas as pd     
 import matplotlib.pyplot as plt
 
 from itertools import combinations
@@ -15,6 +15,8 @@ from sklearn.utils._param_validation import Interval, StrOptions
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.preprocessing import KBinsDiscretizer
 from itertools import product
+from sklearn.metrics import make_scorer
+
 #test
 class DMC(BaseEstimator, ClassifierMixin):
     _parameter_constraints: dict = {
@@ -26,7 +28,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         "random_state": ["random_state"],
         "min_samples_leaf":[Interval(numbers.Integral, 1, None, closed="left"),StrOptions({"auto"})],
         "ccp_alpha":[Interval(numbers.Real, 0, None, closed="left")],
-        "n_bins": [Interval(numbers.Integral, 5, None, closed="left"),StrOptions({"auto"})]
+        "n_bins": [Interval(numbers.Integral, 2, None, closed="left"),StrOptions({"auto"})]
 
         }
     def __init__(
@@ -106,24 +108,20 @@ class DMC(BaseEstimator, ClassifierMixin):
 
         if self.discretization == "DT":
             #Consider the situation when t="auto"
-            clf = DecisionTreeClassifier()
-            path=clf.cost_complexity_pruning_path(X, y_encoded)
-            ccp_alphas, impurities = path.ccp_alphas, path.impurities
-
-            if self.min_samples_leaf=='auto' or self.ccp_alpha == 'auto':
-                parameters_tree = self.get_Tree_optimal(X, y_encoded, alphas=ccp_alphas)
-            if self.min_samples_leaf == 'auto':
-                self.min_samples_leaf = parameters_tree['min_samples_leaf']
-            if self.ccp_alpha == 'auto':
-                self.ccp_alpha = parameters_tree['ccp_alpha']
+            #clf = DecisionTreeClassifier()
+            #path=clf.cost_complexity_pruning_path(X, y_encoded)
+            #ccp_alphas, impurities = path.ccp_alphas, path.impurities
+            #self.ccp_alpha=np.random.choice(ccp_alphas)
+            if self.min_samples_leaf=='auto':
+                self.min_samples_leaf = self.get_Tree_optimal(X, y_encoded)['min_samples_leaf']
                 #self.min_samples_leaf=parameters_tree['min_samples_leaf']
 
-            self.discretization_model = DecisionTreeClassifier(ccp_alpha=self.ccp_alpha, 
+            self.discretization_model = DecisionTreeClassifier(ccp_alpha=0, 
                                            class_weight="balanced", 
                                            criterion='entropy', 
                                            min_samples_leaf= self.min_samples_leaf,
                                         max_features= 'sqrt',
-                                           splitter='random',
+                                           splitter='best',
                                            random_state=self.random_state).fit(X, y_encoded)
             
             self.discrete_profiles=self.discretisation_DT(X, self.discretization_model)
@@ -187,24 +185,22 @@ class DMC(BaseEstimator, ClassifierMixin):
         prob = lambd / np.sum(lambd, axis=0)
         return prob[:, self.discretization_model.predict(X)].T 
 
-    def get_T_optimal(self, X, y, T_start=10, T_end=100, T_step=10):
+    def get_T_optimal(self, X, y, T_start=10, T_end=150, T_step=140):
         param_grid = {
             'T': np.linspace(T_start, T_end, T_step, dtype=int)
         }
-        grid_search = GridSearchCV(estimator=self, param_grid=param_grid, cv=2)
+        grid_search = GridSearchCV(estimator=self, param_grid=param_grid, cv=2,scoring=gloabl_risk, error_score='raise')
         grid_search.fit(X, y)
         return grid_search.best_params_
     
-    def get_Tree_optimal(self,X,y,alphas):
-        print("hola")
-        parameters={"min_samples_leaf":np.linspace(4, 100, 10, dtype=int),
-                    "ccp_alphas":alphas}
-        grid_search = GridSearchCV(estimator=self, param_grid=parameters, cv=2)
+    def get_Tree_optimal(self,X,y):
+        parameters={"min_samples_leaf":np.linspace(4, 100, 20, dtype=int)}
+        grid_search = GridSearchCV(estimator=self, param_grid=parameters, cv=2,scoring=gloabl_risk)
         grid_search.fit(X, y)
         return grid_search.best_params_
     # Function set_params and get_params are used to gridsearchCV in sklearn
+
     def get_nbins_optimal(self,X,y):
-        print("hola")
         param_grid = {
             'n_bins': np.linspace(2, 7, 1, dtype=int)
         }
@@ -220,7 +216,7 @@ class DMC(BaseEstimator, ClassifierMixin):
     def get_params(self, deep=True):
         return {"T": self.T, "N": self.N,"discretization":self.discretization,"L":self.L,
                 "random_state":self.random_state,"box":self.box,"option_info":self.option_info,
-                "min_samples_leaf":self.min_samples_leaf,"ccp_alpha":self.ccp_alpha,
+                "min_samples_leaf":self.min_samples_leaf,
                 "n_bins":self.n_bins}
        
     def discretisation_DT(self,X, modele) :
@@ -349,6 +345,15 @@ def compute_conditional_risk(y_true: np.ndarray, y_pred: np.ndarray, K: int, L: 
     
     return R, confmat
 
+def score_global_risk(y_true,y_pred):
+    k=len(np.unique(y_true))
+    L = np.ones((k, k)) - np.eye(k)
+    pi=compute_pi(y_true, k)
+    R,M=compute_conditional_risk(y_true, y_pred, k, L)
+    score=np.sum(R * pi)
+    return score
+
+gloabl_risk=make_scorer(score_global_risk,greater_is_better=False)
 
 def compute_global_risk(R, pi):
     """
