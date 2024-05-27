@@ -2,7 +2,7 @@ import numbers
 import numpy as np
 import pandas as pd     
 import matplotlib.pyplot as plt
-import skfuzzy as fuzz
+#import skfuzzy as fuzz
 
 from itertools import product
 from itertools import combinations
@@ -207,8 +207,7 @@ class DMC(BaseEstimator, ClassifierMixin):
     def get_params(self, deep=True):
         return {"T": self.T, "N": self.N,"discretization":self.discretization,"L":self.L,
                 "random_state":self.random_state,"box":self.box,"option_info":self.option_info,
-                "min_samples_leaf":self.min_samples_leaf,
-                "n_bins":self.n_bins}
+                "min_samples_leaf":self.min_samples_leaf}
        
     def discretisation_DT(self,X, modele) :
         '''
