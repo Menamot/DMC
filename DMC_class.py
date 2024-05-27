@@ -31,9 +31,6 @@ class DMC(BaseEstimator, ClassifierMixin):
         "box": ["array-like", None],
         "random_state": ["random_state"],
         "min_samples_leaf":[Interval(numbers.Integral, 1, None, closed="left"),StrOptions({"auto"})],
-        "ccp_alpha":[Interval(numbers.Real, 0, None, closed="left")],
-        "n_bins": [Interval(numbers.Integral, 2, None, closed="left"),StrOptions({"auto"})]
-
         }
     def __init__(
             self,
@@ -46,8 +43,6 @@ class DMC(BaseEstimator, ClassifierMixin):
             random_state=None,
             option_info=False,
             min_samples_leaf="auto", #for treee
-            ccp_alpha=0, #for treee
-            n_bins="auto" #for kbins
     ):
         """
         Initialize the DMC model.
@@ -86,10 +81,7 @@ class DMC(BaseEstimator, ClassifierMixin):
 
         self.random_state = random_state
         self.min_samples_leaf = min_samples_leaf
-        self.ccp_alpha = ccp_alpha
         self.option_info = option_info
-        self.n_bins = n_bins
-        
         self._validate_params()
 
     def fit(self, X, y, **paramT):
@@ -115,7 +107,7 @@ class DMC(BaseEstimator, ClassifierMixin):
             self.discretization_model = KMeans(n_clusters=self.T,random_state=self.random_state)
             self.discretization_model.fit(X)
             self.discrete_profiles = self.discretization_model.labels_
-
+            self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
         if self.discretization == "DT":
             #Consider the situation when t="auto"
             #clf = DecisionTreeClassifier()
@@ -136,16 +128,6 @@ class DMC(BaseEstimator, ClassifierMixin):
             
             self.discrete_profiles=self.discretisation_DT(X, self.discretization_model)
             self.T=self.discretization_model.get_n_leaves()
-            self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
-            
-        elif self.discretization == "KBins":
-            if self.n_bins == "auto":
-                self.n_bins = self.get_nbins_optimal(X,y_encoded)["n_bins"]
-            print("fin")
-            self.discretization_model = KBinsDiscretizer(n_bins=self.n_bins, encode='onehot', strategy='uniform')
-            self.discretization_model.fit(X)
-            onehotarrays = self.discretization_model.transform(X).toarray()
-            self.discrete_profiles, self.T = self.map_binary_to_int(onehotarrays)
             self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
             
         elif self.discretization == "cmeans":
@@ -178,10 +160,6 @@ class DMC(BaseEstimator, ClassifierMixin):
 
         elif self.discretization=="DT":
             discrete_profiles=self.discretisation_DT(X, self.discretization_model)
-
-        elif self.discretization=="KBins":
-            onehotarrays=self.discretization_model.transform(X).toarray()
-            discrete_profiles,self.T=self.map_binary_to_int(onehotarrays)
 
         elif self.discretization == 'cmeans':
             u_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(X.T, self.cntr, m=self.m, error=0.005, maxiter=1000)
@@ -220,14 +198,6 @@ class DMC(BaseEstimator, ClassifierMixin):
         grid_search.fit(X, y)
         return grid_search.best_params_
     # Function set_params and get_params are used to gridsearchCV in sklearn
-
-    def get_nbins_optimal(self,X,y):
-        param_grid = {
-            'n_bins': np.linspace(2, 7, 1, dtype=int)
-        }
-        grid_search = GridSearchCV(estimator=self, param_grid=param_grid, cv=2)
-        grid_search.fit(X, y)
-        return grid_search.best_params_
     
     def set_params(self, **params):
         for parameter, value in params.items():
@@ -265,25 +235,6 @@ class DMC(BaseEstimator, ClassifierMixin):
         # Mapear los valores originales de Xdiscr a sus equivalentes enteros consecutivos
         Xdiscr_enteros = np.array([mapeo[valor] for valor in Xdiscr])
         return Xdiscr_enteros
-
-    def map_binary_to_int(self,array_binary,l=None):
-
-        '''
-        funcion que mapea un array binario (0,1,...,0,1) hacia un entero 0,1,..,2^l-1
-        input:
-        array_binary: array like:
-        array binario
-
-        l: int:
-        length of the array
-        '''
-        l=len(array_binary[0])
-        combinaciones = list(product([0, 1], repeat=l))
-
-        diccionario_combinaciones = {tuple(comb): i for i, comb in enumerate(combinaciones)}
-        enteros_mapeados = [diccionario_combinaciones[tuple(fila)] for fila in list(array_binary)]
-        return np.array(enteros_mapeados), len(combinaciones)
-
 
 def compute_pi(y: np.ndarray, K: int):
     """
