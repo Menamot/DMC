@@ -289,17 +289,15 @@ class SDMC(BaseEstimator, ClassifierMixin):
         if self.Alpha is None:
             self.Alpha=np.ones((1,2))[0]
         if any(param is None for param in params):
-            print("hola")
-            model=DMC()
-            model.fit(X,y)
-            self.pHat=model.pHat
-            self.discretization_model=model.discretization_model
-            self.piDMC=model.piStar
-            self.RstarDMC=model.RStar
+            self.model=DMC()
+            self.model.fit(X,y)
+            self.pHat=self.model.pHat
+            self.discretization_model=self.model.discretization_model
+            self.piDMC=self.model.piStar
+            self.RstarDMC=self.model.RStar
         self.pistar=SoftminDMC_compute_G_root_MonteCarlo(self.k, self.L, self.pHat, self.lambd,self.N, self.Alpha, self.Eps)
-        print("sii")
         self._is_fitted = True
-        self.find_lamda(delta=100)  
+        self.find_lamda(delta=1,k=self.k,lambd=self.lambd)  
         return self
     
     def predict(self,X,discretization="kmeans"):
