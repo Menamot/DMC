@@ -109,7 +109,7 @@ class DMC(BaseEstimator, ClassifierMixin):
             self.discretization_model.fit(X)
             self.discrete_profiles = self.discretization_model.labels_
             self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
-        if self.discretization == "DT":
+        elif self.discretization == "DT":
             #Consider the situation when t="auto"
             #clf = DecisionTreeClassifier()
             #path=clf.cost_complexity_pruning_path(X, y_encoded)
@@ -136,12 +136,12 @@ class DMC(BaseEstimator, ClassifierMixin):
                 X.T,  # 转置数据，因为算法期望数据是以列为特征的
                 c=self.T,  # 聚类的数量
                 m=self.m,  # 隶属度的模糊系数
-                error=0.005,  # 停止条件
-                maxiter=2000,  # 最大迭代次数
+                error=0.05,  # 停止条件
+                maxiter=1000,  # 最大迭代次数
                 init=None  # 初始化聚类中心
             )
             self.pHat = compute_pHat_with_cmeans(u, y_encoded, K)
-        
+
         self.piTrain = compute_pi(y_encoded, K)
         self.piStar, rStar, self.RStar, V_iter, stockpi = compute_piStar(self.pHat, y_encoded, K, self.L, self.T, self.N, 0, self.box)
         self._is_fitted = True
@@ -165,7 +165,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         elif self.discretization == 'cmeans':
             u_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(X.T, self.cntr, m=self.m, error=0.005, maxiter=1000)
             prob = delta_proba_U(u_pred, self.pHat, pi, self.L)
-            return np.argmax(prob,axis=1)
+            return self.label_encoder.inverse_transform(np.argmax(prob,axis=1))
 
         return self.label_encoder.inverse_transform(
             predict_profile_label(pi, self.pHat, self.L)[discrete_profiles]
