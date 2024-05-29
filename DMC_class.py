@@ -84,7 +84,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         self.option_info = option_info
         self._validate_params()
 
-    def fit(self, X, y, **paramT):
+    def fit(self, X, y, n_init=5, **paramT):
         self.random_state = check_random_state(self.random_state)
         if isinstance(X, pd.DataFrame):
             X = X.to_numpy()
@@ -105,7 +105,7 @@ class DMC(BaseEstimator, ClassifierMixin):
                 if self.option_info is True:
                     print('Finish')
             self.discretization_model = KMeans(n_clusters=self.T,random_state=self.random_state,
-                                               init="k-means++")
+                                               n_init=n_init)
             self.discretization_model.fit(X)
             self.discrete_profiles = self.discretization_model.labels_
             self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
@@ -185,9 +185,9 @@ class DMC(BaseEstimator, ClassifierMixin):
             prob = delta_proba_U(u_pred, self.pHat, pi, self.L)
             return prob
 
-    def get_T_optimal(self, X, y, T_start=5, T_end=100, Num_t_Values=95):
+    def get_T_optimal(self, X, y, T_start=5, T_end=100, T_step=95):
         param_grid = {
-            'T': np.linspace(T_start, T_end, Num_t_Values, dtype=int)
+            'T': np.arange(T_start, T_end, T_step, dtype=int)
         }
         grid_search = GridSearchCV(estimator=self, param_grid=param_grid, cv=2,scoring=gloabl_risk, error_score='raise')
         grid_search.fit(X, y)
@@ -485,7 +485,7 @@ def score_global_risk(y_true,y_pred):
     L = np.ones((k, k)) - np.eye(k)
     pi=compute_pi(y_true, k)
     R,M=compute_conditional_risk(y_true, y_pred, k, L)
-    score=np.sum(R * pi)
+    score=np.sum(R * (pi))
     return score
 
 gloabl_risk=make_scorer(score_global_risk,greater_is_better=False)
