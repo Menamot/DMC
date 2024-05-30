@@ -19,6 +19,7 @@ from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.preprocessing import KBinsDiscretizer
 from itertools import product
 from sklearn.metrics import make_scorer
+from sklearn.mixture import GaussianMixture
 
 #test
 class DMC(BaseEstimator, ClassifierMixin):
@@ -26,7 +27,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         "N": [Interval(numbers.Integral, 1, None, closed="left")],
         "T": [Interval(numbers.Integral, 2, None, closed="left"), StrOptions({"auto"})],
         "m": [Interval(numbers.Real,1,None, closed="neither")],
-        "discretization": [StrOptions({"kmeans", "DT", "KBins", "cmeans"})],
+        "discretization": [StrOptions({"kmeans", "DT", "KBins", "cmeans", "GM"})],
         "L": ["array-like", None],
         "box": ["array-like", None],
         "random_state": ["random_state"],
@@ -84,7 +85,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         self.option_info = option_info
         self._validate_params()
 
-    def fit(self, X, y, n_init=5, **paramT):
+    def fit(self, X, y, **paramT):
         self.random_state = check_random_state(self.random_state)
         if isinstance(X, pd.DataFrame):
             X = X.to_numpy()
@@ -104,8 +105,7 @@ class DMC(BaseEstimator, ClassifierMixin):
                 self.T = self.get_T_optimal(X, y_encoded, **paramT)['T']
                 if self.option_info is True:
                     print('Finish')
-            self.discretization_model = KMeans(n_clusters=self.T,random_state=self.random_state,
-                                               n_init=n_init)
+            self.discretization_model = KMeans(n_clusters=self.T,random_state=self.random_state)
             self.discretization_model.fit(X)
             self.discrete_profiles = self.discretization_model.labels_
             self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
@@ -141,6 +141,11 @@ class DMC(BaseEstimator, ClassifierMixin):
                 init=None  # 初始化聚类中心
             )
             self.pHat = compute_pHat_with_cmeans(u, y_encoded, K)
+        elif self.discretization == 'GM':
+            self.discretization_model = GaussianMixture(n_components=self.T, max_iter=200)
+            self.discretization_model.fit(X)
+            u = self.discretization_model.predict_proba(X).T
+            self.pHat = compute_pHat_with_cmeans(u, y_encoded, K)
 
         self.piTrain = compute_pi(y_encoded, K)
         self.piStar, rStar, self.RStar, V_iter, stockpi = compute_piStar(self.pHat, y_encoded, K, self.L, self.T, self.N, 0, self.box)
@@ -166,6 +171,11 @@ class DMC(BaseEstimator, ClassifierMixin):
             u_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(X.T, self.cntr, m=self.m, error=0.005, maxiter=1000)
             prob = delta_proba_U(u_pred, self.pHat, pi, self.L)
             return self.label_encoder.inverse_transform(np.argmax(prob,axis=1))
+
+        elif self.discretization == 'GM':
+            u_pred = self.discretization_model.predict_proba(X).T
+            prob = delta_proba_U(u_pred, self.pHat, pi, self.L)
+            return self.label_encoder.inverse_transform(np.argmax(prob, axis=1))
 
         return self.label_encoder.inverse_transform(
             predict_profile_label(pi, self.pHat, self.L)[discrete_profiles]
