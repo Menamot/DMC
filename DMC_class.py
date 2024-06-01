@@ -142,7 +142,7 @@ class DMC(BaseEstimator, ClassifierMixin):
             )
             self.pHat = compute_pHat_with_cmeans(u, y_encoded, K)
         elif self.discretization == 'GM':
-            self.discretization_model = GaussianMixture(n_components=self.T, max_iter=200)
+            self.discretization_model = GaussianMixture(n_components=self.T, max_iter=200, covariance_type='diag', tol=1e-2)
             self.discretization_model.fit(X)
             u = self.discretization_model.predict_proba(X).T
             self.pHat = compute_pHat_with_cmeans(u, y_encoded, K)
