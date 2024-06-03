@@ -27,7 +27,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         "N": [Interval(numbers.Integral, 1, None, closed="left")],
         "T": [Interval(numbers.Integral, 2, None, closed="left"), StrOptions({"auto"})],
         "m": [Interval(numbers.Real,1,None, closed="neither")],
-        "discretization": [StrOptions({"kmeans", "DT", "KBins", "cmeans", "GM"})],
+        "discretization": [StrOptions({"kmeans", "DT", "KBins", "cmeans", "GM", "kcmeans"})],
         "L": ["array-like", None],
         "box": ["array-like", None],
         "random_state": ["random_state"],
@@ -109,6 +109,14 @@ class DMC(BaseEstimator, ClassifierMixin):
             self.discretization_model.fit(X)
             self.discrete_profiles = self.discretization_model.labels_
             self.pHat = compute_pHat(self.discrete_profiles, y_encoded, K, self.T)
+
+        elif self.discretization == 'kcmeans':
+            self.discretization_model = KMeans(n_clusters=self.T, random_state=self.random_state)
+            self.discretization_model.fit(X)
+            self.cntr = self.discretization_model.cluster_centers_
+            u, _, _, _, _, _ = fuzz.cluster.cmeans_predict(X.T, self.cntr, m=self.m, error=0.05, maxiter=1000)
+            self.pHat = compute_pHat_with_cmeans(u, y_encoded, K)
+
         elif self.discretization == "DT":
             #Consider the situation when t="auto"
             #clf = DecisionTreeClassifier()
@@ -171,6 +179,11 @@ class DMC(BaseEstimator, ClassifierMixin):
             u_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(X.T, self.cntr, m=self.m, error=0.005, maxiter=1000)
             prob = delta_proba_U(u_pred, self.pHat, pi, self.L)
             return self.label_encoder.inverse_transform(np.argmax(prob,axis=1))
+
+        elif self.discretization == 'kcmeans':
+            u_pred, _, _, _, _, _ = fuzz.cluster.cmeans_predict(X.T, self.cntr, m=self.m, error=0.005, maxiter=1000)
+            prob = delta_proba_U(u_pred, self.pHat, pi, self.L)
+            return self.label_encoder.inverse_transform(np.argmax(prob, axis=1))
 
         elif self.discretization == 'GM':
             u_pred = self.discretization_model.predict_proba(X).T
