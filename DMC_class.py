@@ -172,7 +172,7 @@ class DMC(BaseEstimator, ClassifierMixin):
 
         self.piTrain = compute_pi(y_encoded, K)
         self.piStar, rStar, self.RStar, V_iter, stockpi = compute_piStar(self.pHat, y_encoded, K, self.L, self.T,
-                                                                         self.N, 0, self.box)
+                                                                         1000, 0, self.box)
         self._is_fitted = True
         self.classes_ = np.unique(y_encoded)
         self.X_ = X
@@ -466,7 +466,7 @@ def delta_proba_U(U, pHat, pi, L, methode='before', temperature=0):
 
         return softmax_output
 
-    lambd = U.T @ ((pi.T * L).T @ pHat).T
+    lambd = U.T @ ((pi.T * L).T @ pHat).T + 1e-10
 
     if methode == 'softmin':
         prob = softmin_with_temperature(lambd, temperature)
@@ -481,7 +481,8 @@ def delta_proba_U(U, pHat, pi, L, methode='before', temperature=0):
         prob = 1 - np.divide(lambd, np.sum(lambd, axis=1)[:, np.newaxis])
 
     elif methode == 'before':
-        prob = 1 - np.divide(lambd, np.sum(lambd, axis=1)[:, np.newaxis])
+        a = np.sum(lambd, axis=1)[:, np.newaxis] - lambd
+        prob = np.divide(a, np.sum(a, axis=1)[:, np.newaxis])
 
     elif methode == 'after':
         prob_init = 1 - np.divide(lambd, np.sum(lambd, axis=1)[:, np.newaxis])
