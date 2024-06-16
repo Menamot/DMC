@@ -466,7 +466,7 @@ def delta_proba_U(U, pHat, pi, L, methode='before', temperature=0):
 
         return softmax_output
 
-    lambd = U.T @ ((pi.T * L).T @ pHat).T + 1e-10
+    lambd = U.T @ ((pi.reshape(-1,1) * L).T @ pHat).T + 1e-10
 
     if methode == 'softmin':
         prob = softmin_with_temperature(lambd, temperature)
