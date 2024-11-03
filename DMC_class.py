@@ -21,6 +21,7 @@ from itertools import product
 from sklearn.metrics import make_scorer
 from sklearn.mixture import GaussianMixture
 
+from evclust.ecm import ecm
 
 # test
 class DMC(BaseEstimator, ClassifierMixin):
