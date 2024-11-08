@@ -1,27 +1,22 @@
 import numbers
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import skfuzzy as fuzz
-
-from itertools import product
 from itertools import combinations
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import skfuzzy as fuzz
+from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.cluster import KMeans
 from sklearn.metrics import confusion_matrix
-from sklearn.utils import check_random_state
-from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import GridSearchCV
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.utils._param_validation import Interval, StrOptions
-from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
-from sklearn.preprocessing import KBinsDiscretizer
-from itertools import product
 from sklearn.metrics import make_scorer
 from sklearn.mixture import GaussianMixture
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import LabelEncoder
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.utils import check_random_state
+from sklearn.utils._param_validation import Interval, StrOptions
+from sklearn.utils.validation import check_is_fitted
 
-from evclust.ecm import ecm
 
 # test
 class DMC(BaseEstimator, ClassifierMixin):
@@ -90,7 +85,7 @@ class DMC(BaseEstimator, ClassifierMixin):
         self.option_info = option_info
         self._validate_params()
 
-    def fit(self, X, y, **paramT):
+    def fit(self, X, y, **param):
         self.random_state = check_random_state(self.random_state)
         if isinstance(X, pd.DataFrame):
             X = X.to_numpy()
@@ -105,7 +100,7 @@ class DMC(BaseEstimator, ClassifierMixin):
 
         if self.discretization == 'kmeans':
             if self.T == 'auto':
-                self.T = self.get_T_optimal(X, y_encoded, **paramT)['T']
+                self.T = self.get_T_optimal(X, y_encoded, **param)['T']
 
             if self.init is not None:
                 self.discretization_model = KMeans(n_clusters=self.T, init=self.init, max_iter=self.N,
